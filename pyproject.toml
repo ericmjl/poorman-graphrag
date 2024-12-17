@@ -70,17 +70,14 @@ version = "0.0.1"
 # NOTE: move dependencies into this section if you need to distribute the project as a Python package.
 requires-python = ">=3.10"
 dependencies = [
-    "matplotlib",
+    "networkx",
+    "hvplot",
     "pandas",
-    "scikit-learn",
-    "numpy",
-    "pyprojroot",
-    "scipy",
-    "pymc",
-    "seaborn",
-    "python-dotenv",
-    "typer",
+    "matplotlib",
     "jax",
+    "jaxlib",
+    "numpy",
+    "llamabot>=0.0.89,<0.11",
 ]
 readme = "README.md"
 
