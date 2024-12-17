@@ -78,6 +78,7 @@ dependencies = [
     "jaxlib",
     "numpy",
     "llamabot>=0.0.89,<0.11",
+    "markitdown>=0.0.1a2,<0.0.1a3", "modal>=0.68.26,<0.69",
 ]
 readme = "README.md"
 
