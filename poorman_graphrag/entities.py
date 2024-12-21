@@ -128,25 +128,3 @@ class Entities(BaseModel):
         :return: Dictionary representation of entities
         """
         return {"entities": [e.model_dump() for e in self.entities]}
-
-
-# Add paper metadata relationship types
-PaperRelationType = Literal[
-    # Document relationships
-    "author_of",         # Person is author of document
-    "cites",            # Document cites another document
-    "published_in",     # Document published in journal/venue
-    "affiliated_with",  # Author affiliated with institution
-    "funded_by",       # Research funded by organization/grant
-    "keywords",        # Document has associated keywords
-    "published_on",    # Publication date
-    "reviews",         # Document reviews another document
-    "translates",      # Document translates another document
-    "retracts",        # Document retracts another document
-    "supplements",     # Document supplements another document
-    "contributes_to",  # Author contributes to document
-    "edits",          # Editor edits document
-    "peer_reviews",    # Reviewer peer reviews document
-    "supervises",      # Supervisor oversees research
-    "corresponds_for", # Corresponding author for document
-]
