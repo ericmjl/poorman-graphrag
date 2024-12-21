@@ -149,6 +149,7 @@ oryx-build-commands.txt
 .DS_Store
 docs/cli.md
 .pixi
+data
 
 # SQLite database
 message_log.db
