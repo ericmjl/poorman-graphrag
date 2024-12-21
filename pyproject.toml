@@ -68,7 +68,7 @@ namespaces = false
 name = "poorman-graphrag"
 version = "0.0.1"
 # NOTE: move dependencies into this section if you need to distribute the project as a Python package.
-requires-python = ">=3.10"
+requires-python = "<=3.12"
 dependencies = [
     "networkx",
     "hvplot",
@@ -77,8 +77,11 @@ dependencies = [
     "jax",
     "jaxlib",
     "numpy",
-    "llamabot>=0.0.89,<0.11",
-    "markitdown>=0.0.1a2,<0.0.1a3", "modal>=0.68.26,<0.69",
+    "llamabot>=0.10.6",
+    "markitdown>=0.0.1a2,<0.0.1a3",
+    "modal>=0.68.26,<0.69",
+    "docling",
+    "chonkie[semantic]>=0.2.2,<0.3",
 ]
 readme = "README.md"
 
@@ -100,6 +103,8 @@ poorman-graphrag = { path = ".", editable = true }
 
 # NOTE: Core dependencies (needed for running the program) go here.
 [tool.pixi.dependencies]
+python-levenshtein = ">=0.26.1,<0.27"
+thefuzz = ">=0.22.1,<0.23"
 
 # NOTE: Testing dependencies (not needed for running program) go here.
 [tool.pixi.feature.tests.dependencies]
