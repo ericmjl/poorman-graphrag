@@ -10327,7 +10327,7 @@ packages:
   name: poorman-graphrag
   version: 0.0.1
   path: .
-  sha256: e9da84503db3e1c5ee1a04a52af5c5170b2353b20ac5fa24bece1450cc3f2ae5
+  sha256: a25c6dd9327dd19cfe3a8d9476c43b71d8249ab65838eeb5aeecd0648470e391
   requires_dist:
   - networkx
   - hvplot
