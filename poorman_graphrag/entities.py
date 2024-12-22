@@ -13,6 +13,10 @@ from typing import Any, Callable, Dict, List, Literal, Optional
 from pydantic import BaseModel, Field, model_validator
 from thefuzz import fuzz
 
+# TODO: Make EntityType configurable by a user.
+# In chatting with Claude, I have a few strategies.
+# These are documented in docs/configuration/entity_types.md
+
 # Research entities
 ResearchEntityType = Literal["paper", "author", "institution", "dataset"]
 
