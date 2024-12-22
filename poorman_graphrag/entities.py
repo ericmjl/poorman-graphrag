@@ -43,13 +43,20 @@ class Entity(BaseModel):
 
     :param entity_type: The type of entity
     :param name: Name or title of the entity
-    :param description: Optional description of the entity
-    :param metadata: Optional dictionary of additional metadata
+    :param summary: Summary paragraph about the entity
+    :param quote: Quote from the text that contains the entity
     """
 
     entity_type: EntityType = Field(..., description="Type of entity")
     name: str = Field(..., description="Name or title of entity")
-    description: Optional[str] = Field(None, description="Description of entity")
+    summary: Optional[str] = Field(
+        ...,
+        description=(
+            "Summary paragraph about entity. "
+            "It should summarize how the entity relates "
+            "to other putative entities within the chunk of text provided."
+        ),
+    )
     quote: str = Field(
         ...,
         description=(
@@ -101,6 +108,16 @@ class Entities(BaseModel):
         if isinstance(idx, slice):
             return Entities(entities=self.entities[idx])
         return self.entities[idx]
+
+    def names(self, with_types: bool = False) -> List[str]:
+        """Return list of entity names.
+
+        :param with_types: Whether to include entity types in the output
+        :return: List of entity names
+        """
+        if with_types:
+            return [f"{e.entity_type}: {e.name}" for e in self.entities]
+        return [e.name for e in self.entities]
 
     def filter_by_type(self, entity_type: EntityType) -> "Entities":
         """Return new Entities instance with only entities of specified type.
@@ -203,11 +220,11 @@ def merge_exact_duplicates(entities: "Entities") -> "Entities":
         if len(group) == 1:
             merged.append(group[0])
         else:
-            # Combine descriptions
-            descriptions = [e.description for e in group if e.description]
-            merged_desc = " ".join(descriptions) if descriptions else None
-            # Use the first entity as base and update description
-            merged.append(group[0].update(description=merged_desc))
+            # Combine summaries
+            summaries = [e.summary for e in group if e.summary]
+            merged_summary = " ".join(summaries) if summaries else None
+            # Use the first entity as base and update summary
+            merged.append(group[0].update(summary=merged_summary))
 
     return Entities(entities=merged)
 
@@ -261,11 +278,11 @@ def merge_levenshtein_similar(
             if len(similar_group) == 1:
                 final_entities.append(entity1)
             else:
-                # Merge descriptions
-                descriptions = [e.description for e in similar_group if e.description]
-                merged_desc = ", ".join(descriptions) if descriptions else None
-                # Use the first entity as base and update description
-                final_entities.append(similar_group[0].update(description=merged_desc))
+                # Merge summaries
+                summaries = [e.summary for e in similar_group if e.summary]
+                merged_summary = ", ".join(summaries) if summaries else None
+                # Use the first entity as base and update summary
+                final_entities.append(similar_group[0].update(summary=merged_summary))
                 merged.add(i)
 
     return Entities(entities=final_entities)
