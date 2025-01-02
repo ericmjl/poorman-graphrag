@@ -7,31 +7,40 @@ import networkx as nx
 from poorman_graphrag.index import GraphRAGIndex
 
 
-def build_network(index: GraphRAGIndex) -> nx.MultiDiGraph:
+def build_network(
+    index: GraphRAGIndex,
+    include_documents: bool = False,
+    include_chunks: bool = False,
+) -> nx.MultiDiGraph:
     """Build a NetworkX graph from a GraphRAGIndex.
 
-    The graph will contain nodes for documents, chunks, entities, and relationships.
-    Edges will represent the connections between these elements.
+    The graph will contain nodes for entities and relationships, with optional
+    document and chunk nodes. Edges represent the connections between these elements.
 
     :param index: GraphRAGIndex instance to convert to a network
+    :param include_documents: Whether to include document nodes in the graph
+    :param include_chunks: Whether to include chunk nodes in the graph
     :return: NetworkX MultiDiGraph containing the network representation
     """
     G = nx.MultiDiGraph()
 
-    # Add document nodes
-    for doc_hash, doc_text in index.doc_index.items():
-        G.add_node(doc_hash, type="document", text=doc_text)
+    # Add document nodes if requested
+    if include_documents:
+        for doc_hash, doc_text in index.doc_index.items():
+            G.add_node(doc_hash, type="document", text=doc_text)
 
-    # Add chunk nodes and connect to documents
-    for chunk_hash, chunk_text in index.chunk_index.items():
-        G.add_node(chunk_hash, type="chunk", text=chunk_text)
+    # Add chunk nodes and connect to documents if requested
+    if include_chunks:
+        for chunk_hash, chunk_text in index.chunk_index.items():
+            G.add_node(chunk_hash, type="chunk", text=chunk_text)
 
-        # Find parent document and add edge
-        for doc_hash, chunk_hashes in index.doc_chunk_links.items():
-            if chunk_hash in chunk_hashes:
-                G.add_edge(doc_hash, chunk_hash, type="contains")
+            # Find parent document and add edge if documents are included
+            if include_documents:
+                for doc_hash, chunk_hashes in index.doc_chunk_links.items():
+                    if chunk_hash in chunk_hashes:
+                        G.add_edge(doc_hash, chunk_hash, type="contains")
 
-    # Add entity nodes and connect to chunks
+    # Add entity nodes
     for entity_hash, entity in index.entity_index.items():
         G.add_node(
             entity_hash,
@@ -41,10 +50,11 @@ def build_network(index: GraphRAGIndex) -> nx.MultiDiGraph:
             summary=entity.summary,
         )
 
-        # Connect entities to their chunks
-        for chunk_hash, entity_hashes in index.chunk_entity_links.items():
-            if entity_hash in entity_hashes:
-                G.add_edge(chunk_hash, entity_hash, type="mentions")
+        # Connect entities to their chunks if chunks are included
+        if include_chunks:
+            for chunk_hash, entity_hashes in index.chunk_entity_links.items():
+                if entity_hash in entity_hashes:
+                    G.add_edge(chunk_hash, entity_hash, type="mentions")
 
     # Add relationship nodes and edges
     for rel_hash, relation in index.relation_index.items():
@@ -62,12 +72,13 @@ def build_network(index: GraphRAGIndex) -> nx.MultiDiGraph:
             summary=relation.summary,
         )
 
-        # Connect relationships to chunks they appear in
-        for chunk_hash, rel_hashes in index.chunk_relation_links.items():
-            if rel_hash in rel_hashes:
-                # Add edge from chunk to both entities involved in relationship
-                G.add_edge(chunk_hash, source_hash, type="mentions")
-                G.add_edge(chunk_hash, target_hash, type="mentions")
+        # Connect relationships to chunks if chunks are included
+        if include_chunks:
+            for chunk_hash, rel_hashes in index.chunk_relation_links.items():
+                if rel_hash in rel_hashes:
+                    # Add edge from chunk to both entities involved in relationship
+                    G.add_edge(chunk_hash, source_hash, type="mentions")
+                    G.add_edge(chunk_hash, target_hash, type="mentions")
 
     return G
 
