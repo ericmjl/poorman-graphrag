@@ -8,8 +8,11 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Dict, List, Set
 
-from poorman_graphrag.entities import Entity
-from poorman_graphrag.relationships import Relationship
+from poorman_graphrag.entities import (
+    Entities,
+    Entity,
+)
+from poorman_graphrag.relationships import Relationship, Relationships
 
 
 @dataclass
@@ -24,28 +27,24 @@ class GraphRAGIndex:
     :ivar chunk_entity_links: Dictionary mapping chunk hashes to sets of entity hashes
     :ivar chunk_relation_links: Dictionary mapping chunk hashes
         to sets of relation hashes
+    :ivar entity_chunk_links: Dictionary mapping entity hashes to sets of chunk hashes
     """
 
-    doc_index: Dict[str, str] = None
-    chunk_index: Dict[str, str] = None
-    entity_index: Dict[str, Entity] = None
-    relation_index: Dict[str, Relationship] = None
-    doc_chunk_links: Dict[str, Set[str]] = None
-    chunk_entity_links: Dict[str, Set[str]] = None
-    chunk_relation_links: Dict[str, Set[str]] = None
-
-    def __post_init__(self):
-        """Initialize the index."""
-        self.doc_index = {}
-        self.chunk_index = {}
-        self.entity_index = {}
-        self.relation_index = {}
-        self.doc_chunk_links = {}
-        self.chunk_entity_links = {}
-        self.chunk_relation_links = {}
+    def __init__(self):
+        self.doc_index: Dict[str, str] = {}
+        self.chunk_index: Dict[str, str] = {}
+        self.entity_index: Dict[str, Entity] = {}
+        self.relation_index: Dict[str, Relationship] = {}
+        self.doc_chunk_links: Dict[str, Set[str]] = {}
+        self.chunk_entity_links: Dict[str, Set[str]] = {}
+        self.chunk_relation_links: Dict[str, Set[str]] = {}
+        self.entity_chunk_links: Dict[str, Set[str]] = {}
 
     def _hash_text(self, text: str) -> str:
         """Generate SHA256 hash of text.
+
+        NOTE: _hash_text should not be a class method. It should be refactored out.
+        It's too simple to be a class method.
 
         :param text: Text to hash
         :return: Hex digest of hash
@@ -64,7 +63,7 @@ class GraphRAGIndex:
         return doc_hash
 
     def add_chunk(self, doc_hash: str, chunk_text: str) -> str:
-        """Add chunk to index and link to document.
+        """Add chunk to index and link to doc OKument.
 
         :param doc_hash: Hash of parent document
         :param chunk_text: Chunk text
@@ -77,8 +76,10 @@ class GraphRAGIndex:
         self.doc_chunk_links[doc_hash].add(chunk_hash)
         return chunk_hash
 
-    def add_entities(self, chunk_hash: str, entities: List[Entity]) -> List[str]:
+    def add_entities(self, chunk_hash: str, entities: Entities) -> List[str]:
         """Add entities to index and link to chunk.
+        If an entity with the same hash already exists,
+        merges the new entity with the existing one.
 
         :param chunk_hash: Hash of parent chunk
         :param entities: List of Entity objects
@@ -86,15 +87,18 @@ class GraphRAGIndex:
         """
         entity_hashes = []
         for entity in entities:
-            entity_hash = self._hash_text(f"{entity.entity_type}:{entity.name}")
-            self.entity_index[entity_hash] = entity
+            entity_hash = entity.hash()
+            if entity_hash in self.entity_index:
+                # Merge with existing entity using __add__ operator
+                self.entity_index[entity_hash] = self.entity_index[entity_hash] + entity
+            else:
+                self.entity_index[entity_hash] = entity
+
             self.chunk_entity_links[chunk_hash].add(entity_hash)
             entity_hashes.append(entity_hash)
         return entity_hashes
 
-    def add_relations(
-        self, chunk_hash: str, relations: List[Relationship]
-    ) -> List[str]:
+    def add_relations(self, chunk_hash: str, relations: Relationships) -> List[str]:
         """Add relations to index and link to chunk.
         Also adds any new entities found in the relations.
 
@@ -105,12 +109,8 @@ class GraphRAGIndex:
         # First collect all entities from relations
         new_entities = []
         for relation in relations:
-            source_entity = Entity(
-                name=relation.source, entity_type=relation.source_type
-            )
-            target_entity = Entity(
-                name=relation.target, entity_type=relation.target_type
-            )
+            source_entity = relation.source  # Already an Entity object
+            target_entity = relation.target  # Already an Entity object
             new_entities.extend([source_entity, target_entity])
 
         # Add any new entities
@@ -119,9 +119,7 @@ class GraphRAGIndex:
         # Now add the relations
         relation_hashes = []
         for relation in relations:
-            relation_hash = self._hash_text(
-                f"{relation.relation_type}:{relation.source}:{relation.target}"
-            )
+            relation_hash = relation.hash()
             self.relation_index[relation_hash] = relation
             self.chunk_relation_links[chunk_hash].add(relation_hash)
             relation_hashes.append(relation_hash)
@@ -177,3 +175,13 @@ class GraphRAGIndex:
             k: set(v) for k, v in data["chunk_relation_links"].items()
         }
         return index
+
+    @property
+    def entities(self) -> Entities:
+        """Get all entities stored in the index as an Entities object.
+
+        :return: Entities instance containing all entities in the index
+        """
+        return Entities(
+            entities=[entity.model_dump() for entity in self.entity_index.values()]
+        )

@@ -4,11 +4,12 @@ This module defines entity types that can be used to structure knowledge graphs
 from scientific literature in biomedical sciences, statistics, and machine learning.
 """
 
+import hashlib
 import json
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field, model_validator
 from thefuzz import fuzz
@@ -44,33 +45,31 @@ class Entity(BaseModel):
     :param entity_type: The type of entity
     :param name: Name or title of the entity
     :param summary: Summary paragraph about the entity
-    :param quote: Quote from the text that contains the entity
     """
 
     entity_type: EntityType = Field(..., description="Type of entity")
     name: str = Field(..., description="Name or title of entity")
-    summary: Optional[str] = Field(
-        ...,
-        description=(
-            "Summary paragraph about entity. "
-            "It should summarize how the entity relates "
-            "to other putative entities within the chunk of text provided."
-        ),
-    )
-    quote: str = Field(
-        ...,
-        description=(
-            "Quote from the text that contains the entity. "
-            "It should be longer than the name and include surrounding context."
-        ),
-    )
+    summary: Optional[str] = Field(..., description="Summary sentence about entity")
 
     @model_validator(mode="after")
-    def validate_quote_length(self) -> "Entity":
-        """Validate that the quote is longer than the name."""
-        if len(self.quote) <= len(self.name):
-            raise ValueError("Quote must be longer than the entity name")
+    def validate_summary(self) -> "Entity":
+        """Validate that the summary is not empty."""
+        if not self.summary:
+            raise ValueError("Summary cannot be empty")
         return self
+
+    def __hash__(self) -> int:
+        """Generate hash for entity based on type and name."""
+        hasher = hashlib.sha256()
+        hasher.update(f"{self.entity_type.lower()}:{self.name.lower()}".encode())
+        return int.from_bytes(hasher.digest(), "big")
+
+    def hash(self) -> str:
+        """Generate hash for entity based on type and name."""
+        # use sha256
+        hasher = hashlib.sha256()
+        hasher.update(f"{self.entity_type.lower()}:{self.name.lower()}".encode())
+        return hasher.hexdigest()
 
     def update(self, **kwargs) -> "Entity":
         """Return a new Entity instance with updated fields.
@@ -80,16 +79,60 @@ class Entity(BaseModel):
         """
         return Entity(**{**self.model_dump(), **kwargs, "updated_at": datetime.now()})
 
+    def __add__(self, other: "Entity") -> "Entity":
+        """Merge this entity with another entity.
+
+        :param other: Another entity to merge with
+        :return: New Entity instance with merged data
+        """
+        # Combine summaries if they exist
+        summaries = []
+        if self.summary:
+            summaries.append(self.summary)
+        if other.summary:
+            summaries.append(other.summary)
+        merged_summary = "\n\n".join(summaries) if summaries else None
+
+        return Entity(
+            entity_type=self.entity_type,
+            name=self.name,  # Keep the name of the primary entity
+            summary=merged_summary,
+        )
+
+    def __radd__(self, other: "Entity") -> "Entity":
+        """Right-hand addition, called when doing other + self.
+
+        :param other: Another entity to merge with
+        :return: New Entity instance with merged data
+        """
+        return self + other  # Reuse __add__ implementation
+
 
 class Entities(BaseModel):
     """Collection of Entity objects for batch processing.
 
-    :param entities: List of Entity objects
+    :param entities: List of Entity objects or their dictionary representations
     """
 
     entities: List[Entity] = Field(
         default_factory=list, description="List of Entity objects"
     )
+
+    @model_validator(mode="before")
+    def validate_entities(cls, values):
+        """Convert dictionaries to Entity objects if needed."""
+        if "entities" in values:
+            raw_entities = values["entities"]
+            converted = []
+            for entity in raw_entities:
+                if isinstance(entity, dict):
+                    converted.append(Entity(**entity))
+                elif isinstance(entity, Entity):
+                    converted.append(entity.model_dump())
+                else:
+                    raise ValueError(f"Invalid entity type: {type(entity)}")
+            values["entities"] = converted
+        return values
 
     def __iter__(self):
         """Allow iteration over entities."""
@@ -167,93 +210,56 @@ class Entities(BaseModel):
         """
         return {"entities": [e.model_dump() for e in self.entities]}
 
-    def deduplicate(
-        self, merge_funcs: Optional[List[Callable[["Entities"], "Entities"]]] = None
-    ) -> "Entities":
-        """Merge similar entities by applying a sequence of deduplication functions.
 
-        By default, applies merge_exact_duplicates()
-        followed by merge_levenshtein_similar().
+def identify_exact_duplicates(entities: "Entities") -> Dict[tuple, list]:
+    """Identify entities that have exactly the same name (ignoring case) and type.
 
-        Custom merge functions can be provided
-        that take an Entities object and return a new Entities object.
-
-        For merge functions that require additional arguments,
-        use functools.partial to create
-        a function that only takes Entities as input. For example:
-
-        ```python
-        from functools import partial
-        custom_levenshtein = partial(merge_levenshtein_similar, similarity_threshold=80)
-        entities.deduplicate(merge_funcs=[merge_exact_duplicates, custom_levenshtein])
-        ```
-
-        :param merge_funcs: List of functions that each take Entities
-            and return Entities.
-            If None, uses default merge functions.
-        :return: New Entities instance with merged entities
-        """
-        if merge_funcs is None:
-            merge_funcs = [merge_exact_duplicates, merge_levenshtein_similar]
-
-        result = self
-        for merge_func in merge_funcs:
-            result = merge_func(result)
-        return result
-
-
-def merge_exact_duplicates(entities: "Entities") -> "Entities":
-    """Merge entities that have exactly the same name (ignoring case) and type.
-
-    :param entities: Entities instance to deduplicate
-    :return: New Entities instance with exact duplicates merged
+    :param entities: Entities instance to check for duplicates
+    :return: Dictionary mapping (type, name) tuples to lists of duplicate entities
     """
-    # Group entities by type and normalized name
     groups: Dict[tuple, list] = defaultdict(list)
     for entity in entities.entities:
         key = (entity.entity_type.lower().strip(), entity.name.lower().strip())
         groups[key].append(entity)
 
-    # Merge entities in each group
-    merged = []
-    for group in groups.values():
-        if len(group) == 1:
-            merged.append(group[0])
-        else:
-            # Combine summaries
-            summaries = [e.summary for e in group if e.summary]
-            merged_summary = " ".join(summaries) if summaries else None
-            # Use the first entity as base and update summary
-            merged.append(group[0].update(summary=merged_summary))
+    # Filter out groups with no duplicates
+    return {k: v for k, v in groups.items() if len(v) > 1}
 
-    return Entities(entities=merged)
+
+def merge_entity_group(group: List[Entity]) -> tuple[Entity, Dict[str, str]]:
+    """Merge a group of duplicate entities into a single entity.
+
+    :param group: List of entities to merge
+    :return: Tuple of (merged entity, mapping of old->new entity names)
+    """
+    merge_mapping: Dict[str, str] = {}
+    result = group[0]
+
+    for other in group[1:]:
+        merge_mapping[other.name] = result.name
+        result = other + result  # Uses __add__
+
+    return result, merge_mapping
 
 
 def merge_levenshtein_similar(
     entities: "Entities", similarity_threshold: int = 95
-) -> "Entities":
+) -> tuple["Entities", Dict[str, str]]:
     """Merge entities that have similar names according to fuzzy string matching.
-
-    Criteria for merging:
-    - Entities must have the same type
-    - Entities must have a similarity score greater
-      than or equal to similarity_threshold
 
     :param entities: Entities instance to deduplicate
     :param similarity_threshold: Minimum similarity ratio (0-100)
-        to consider entities as similar
-    :return: New Entities instance with similar entities merged
+    :return: Tuple of (new Entities instance, mapping of old->new entity names)
     """
-
     # Group entities by type first
     type_groups: Dict[str, list] = defaultdict(list)
     for entity in entities.entities:
         type_groups[entity.entity_type.lower().strip()].append(entity)
 
-    # For each type group, find and merge similar entities
+    merge_mapping: Dict[str, str] = {}
     final_entities = []
+
     for type_group in type_groups.values():
-        # Keep track of which entities have been merged
         merged = set()
 
         for i, entity1 in enumerate(type_group):
@@ -262,12 +268,10 @@ def merge_levenshtein_similar(
 
             similar_group = [entity1]
 
-            # Compare with remaining entities
             for j, entity2 in enumerate(type_group[i + 1 :], start=i + 1):
                 if j in merged:
                     continue
 
-                # Use token sort ratio to handle word reordering
                 similarity = fuzz.token_sort_ratio(
                     entity1.name.lower(), entity2.name.lower()
                 )
@@ -278,11 +282,12 @@ def merge_levenshtein_similar(
             if len(similar_group) == 1:
                 final_entities.append(entity1)
             else:
-                # Merge summaries
-                summaries = [e.summary for e in similar_group if e.summary]
-                merged_summary = ", ".join(summaries) if summaries else None
-                # Use the first entity as base and update summary
-                final_entities.append(similar_group[0].update(summary=merged_summary))
+                # Merge all entities in the group
+                result = similar_group[0]
+                for other in similar_group[1:]:
+                    merge_mapping[other.name] = result.name
+                    result = result.merge_with(other)
+                final_entities.append(result)
                 merged.add(i)
 
-    return Entities(entities=final_entities)
+    return Entities(entities=final_entities), merge_mapping
