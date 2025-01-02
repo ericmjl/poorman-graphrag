@@ -4,7 +4,6 @@ Index for tracking GraphRAG data.
 
 import json
 from dataclasses import dataclass
-from hashlib import sha256
 from pathlib import Path
 from typing import Dict, List, Set
 
@@ -39,17 +38,6 @@ class GraphRAGIndex:
         self.chunk_entity_links: Dict[str, Set[str]] = {}
         self.chunk_relation_links: Dict[str, Set[str]] = {}
         self.entity_chunk_links: Dict[str, Set[str]] = {}
-
-    def _hash_text(self, text: str) -> str:
-        """Generate SHA256 hash of text.
-
-        NOTE: _hash_text should not be a class method. It should be refactored out.
-        It's too simple to be a class method.
-
-        :param text: Text to hash
-        :return: Hex digest of hash
-        """
-        return sha256(text.encode()).hexdigest()
 
     def add_document(self, text: str) -> str:
         """Add document to index.
