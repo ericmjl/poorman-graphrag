@@ -291,3 +291,54 @@ def merge_levenshtein_similar(
                 merged.add(i)
 
     return Entities(entities=final_entities), merge_mapping
+
+
+def identify_levenshtein_similar(
+    entities: "Entities", similarity_threshold: int = 95
+) -> Dict[tuple, List[Entity]]:
+    """Identify entities that have similar names according to fuzzy string matching.
+
+    :param entities: Entities instance to check for similar names
+    :param similarity_threshold: Minimum similarity ratio (0-100) for names
+        to be considered similar
+    :return: Dictionary mapping (type, name) tuples to lists of similar entities
+    """
+    # Group entities by type first to avoid comparing entities of different types
+    type_groups: Dict[str, List[Entity]] = defaultdict(list)
+    for entity in entities.entities:
+        type_groups[entity.entity_type.lower().strip()].append(entity)
+
+    similar_groups: Dict[tuple, List[Entity]] = defaultdict(list)
+
+    # For each type group, compare all pairs of entities
+    for entity_type, type_group in type_groups.items():
+        # Keep track of which entities have been grouped
+        processed = set()
+
+        for i, entity1 in enumerate(type_group):
+            if i in processed:
+                continue
+
+            # Start a new group with this entity
+            key = (entity_type, entity1.name.lower().strip())
+            group = [entity1]
+
+            # Compare with all other unprocessed entities of same type
+            for j, entity2 in enumerate(type_group[i + 1 :], start=i + 1):
+                if j in processed:
+                    continue
+
+                similarity = fuzz.token_sort_ratio(
+                    entity1.name.lower(), entity2.name.lower()
+                )
+
+                if similarity >= similarity_threshold:
+                    group.append(entity2)
+                    processed.add(j)
+
+            # Only add groups with more than one entity
+            if len(group) > 1:
+                similar_groups[key] = group
+                processed.add(i)
+
+    return similar_groups
