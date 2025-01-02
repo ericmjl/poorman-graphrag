@@ -185,3 +185,101 @@ class GraphRAGIndex:
         return Entities(
             entities=[entity.model_dump() for entity in self.entity_index.values()]
         )
+
+    def deduplicate_entities(
+        self, entity_groups_to_deduplicate: Dict[tuple[str, str], List[Entity]]
+    ) -> "GraphRAGIndex":
+        """Deduplicate entities in the index.
+
+        This method takes a dictionary of entity groups to deduplicate,
+        where each group contains entities that should be merged into one.
+        For each group, the first entity is considered the canonical entity,
+        and all other entities are merged into it.
+
+        :param entity_groups_to_deduplicate: Dictionary mapping
+            (entity_type, normalized_name) tuples to a list of Entity objects
+            that should be merged.
+        :return: New GraphRAGIndex with deduplicated entities
+        """
+        # Create a new instance to maintain immutability
+        new_index = GraphRAGIndex()
+        new_index.doc_index = self.doc_index.copy()
+        new_index.chunk_index = self.chunk_index.copy()
+        new_index.doc_chunk_links = self.doc_chunk_links.copy()
+
+        # Create mapping from old entity hashes to new (canonical) entity hashes
+        hash_mapping = {}
+        new_entity_index = {}
+
+        # First, copy over all entities that aren't being deduplicated
+        all_entities_to_dedupe = [
+            entity.hash()
+            for entities in entity_groups_to_deduplicate.values()
+            for entity in entities
+        ]
+        for entity_hash, entity in self.entity_index.items():
+            if entity_hash not in all_entities_to_dedupe:
+                new_entity_index[entity_hash] = entity
+                hash_mapping[entity_hash] = entity_hash
+
+        # Then handle the deduplication groups
+        for entities in entity_groups_to_deduplicate.values():
+            canonical_entity = entities[0]  # First entity is canonical
+            canonical_hash = canonical_entity.hash()
+
+            # Merge all entities in the group into the canonical entity
+            merged_entity = canonical_entity
+            for entity in entities[1:]:
+                merged_entity = merged_entity + entity
+                hash_mapping[entity.hash()] = canonical_hash
+
+            new_entity_index[canonical_hash] = merged_entity
+            hash_mapping[canonical_hash] = canonical_hash
+
+        new_index.entity_index = new_entity_index
+
+        # Update relation index to use new entity hashes
+        new_relation_index = {}
+        for rel_hash, relation in self.relation_index.items():
+            source_hash = hash_mapping.get(
+                relation.source.hash(), relation.source.hash()
+            )
+            target_hash = hash_mapping.get(
+                relation.target.hash(), relation.target.hash()
+            )
+
+            # Create new relation with updated entity references
+            new_relation = Relationship(
+                source=new_entity_index[source_hash].model_dump(),
+                target=new_entity_index[target_hash].model_dump(),
+                relation_type=relation.relation_type,
+                summary=relation.summary,
+            )
+            new_relation_index[new_relation.hash()] = new_relation
+
+        new_index.relation_index = new_relation_index
+
+        # Update chunk-entity links
+        new_chunk_entity_links = {}
+        for chunk_hash, entity_hashes in self.chunk_entity_links.items():
+            new_chunk_entity_links[chunk_hash] = {
+                hash_mapping.get(eh, eh) for eh in entity_hashes
+            }
+        new_index.chunk_entity_links = new_chunk_entity_links
+
+        # Update chunk-relation links
+        new_chunk_relation_links = {}
+        for chunk_hash, relation_hashes in self.chunk_relation_links.items():
+            new_chunk_relation_links[chunk_hash] = set(relation_hashes)
+        new_index.chunk_relation_links = new_chunk_relation_links
+
+        # Update entity-chunk links
+        new_entity_chunk_links = {}
+        for entity_hash, chunk_hashes in self.entity_chunk_links.items():
+            canonical_hash = hash_mapping.get(entity_hash, entity_hash)
+            if canonical_hash not in new_entity_chunk_links:
+                new_entity_chunk_links[canonical_hash] = set()
+            new_entity_chunk_links[canonical_hash].update(chunk_hashes)
+        new_index.entity_chunk_links = new_entity_chunk_links
+
+        return new_index
