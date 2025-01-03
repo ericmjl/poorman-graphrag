@@ -81,7 +81,7 @@ dependencies = [
     "markitdown>=0.0.1a2,<0.0.1a3",
     "modal>=0.68.26,<0.69",
     "docling",
-    "chonkie[semantic]>=0.2.2,<0.3",
+    "chonkie[semantic]>=0.2.2,<0.3", "pyvis",
 ]
 readme = "README.md"
 
@@ -106,6 +106,7 @@ poorman-graphrag = { path = ".", editable = true }
 python-levenshtein = ">=0.26.1,<0.27"
 thefuzz = ">=0.22.1,<0.23"
 numpy = ">=2.2.0,<3"
+pyvis = "*"
 
 # NOTE: Testing dependencies (not needed for running program) go here.
 [tool.pixi.feature.tests.dependencies]
