@@ -35,6 +35,9 @@ class Relationship(BaseModel):
     summary: list[str] = Field(
         ..., description="Summary of relationship as described in the text."
     )
+    quote: str = Field(
+        ..., description="Quote from the text that supports the relationship"
+    )
 
     def hash(self) -> str:
         """Generate hash for relationship."""
@@ -140,7 +143,7 @@ def relationship_extractor_prompt():
 def get_relationship_extractor() -> lmb.StructuredBot:
     """Get a relationship extractor."""
     return lmb.StructuredBot(
-        pydantic_model=Relationship,
+        pydantic_model=Relationships,
         system_prompt=relationship_extractor_prompt(),
         model_name="gpt-4o",
     )

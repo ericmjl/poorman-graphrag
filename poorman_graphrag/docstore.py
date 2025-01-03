@@ -32,11 +32,11 @@ from poorman_graphrag.relationships import (
 )
 
 
-class KnowledgeGraphDocStore(AbstractDocumentStore, nx.MultiDiGraph):
+class KnowledgeGraphDocStore(AbstractDocumentStore):
     """Knowledge Graph document store for LlamaBot.
 
-    This class extends both `AbstractDocumentStore` and `nx.MultiDiGraph`.
-    It is used to store and manage a knowledge graph.
+    This class implements AbstractDocumentStore and uses a MultiDiGraph internally
+    to store the knowledge graph structure.
 
     We model the graph's nodes with multiple partitions:
 
@@ -65,6 +65,7 @@ class KnowledgeGraphDocStore(AbstractDocumentStore, nx.MultiDiGraph):
     ):
         self.storage_path = Path(storage_path)
         self.communities: Dict[str, Community] = {}
+        self._graph = nx.MultiDiGraph()
 
         # Load existing data if available
         if self.storage_path.exists():
@@ -77,13 +78,15 @@ class KnowledgeGraphDocStore(AbstractDocumentStore, nx.MultiDiGraph):
         self.chunker = SDPMChunker()
 
         # Instantiate entity extractor
-        self.entity_extractor = entity_extractor or get_entity_extractor()
+        self.entity_extractor: lmb.StructuredBot = (
+            entity_extractor or get_entity_extractor()
+        )
         self.entity_extractor_user_prompt = (
             entity_extractor_userprompt or entity_extractor_user_prompt
         )
 
         # Instantiate relationship extractor
-        self.relationship_extractor = (
+        self.relationship_extractor: lmb.StructuredBot = (
             relationship_extractor or get_relationship_extractor()
         )
         self.relationship_extractor_user_prompt = (
@@ -91,13 +94,17 @@ class KnowledgeGraphDocStore(AbstractDocumentStore, nx.MultiDiGraph):
         )
 
         # Instantiate entity similarity judge
-        self.entity_similarity_judge = entity_similarity_judge or get_entity_judge()
+        self.entity_similarity_judge: lmb.StructuredBot = (
+            entity_similarity_judge or get_entity_judge()
+        )
         self.entity_similarity_judge_user_prompt = (
             entity_similarity_judge_userprompt or is_same_entity
         )
 
         # Instantiate community summarizer
-        self.community_summarizer = community_summarizer or get_community_summarizer()
+        self.community_summarizer: lmb.StructuredBot = (
+            community_summarizer or get_community_summarizer()
+        )
         self.community_summarizer_user_prompt = (
             community_summarizer_userprompt or community_content
         )
@@ -109,8 +116,8 @@ class KnowledgeGraphDocStore(AbstractDocumentStore, nx.MultiDiGraph):
         :return: Document hash
         """
         doc_hash = sha256(text.encode()).hexdigest()
-        self.add_node(doc_hash, partition="document", text=text)
-        self._save()
+        self._graph.add_node(doc_hash, partition="document", text=text)
+        # self._save()
 
     def add_chunk(self, doc_hash: str, chunk_text: str) -> None:
         """Add chunk to docstore and link to document.
@@ -123,9 +130,24 @@ class KnowledgeGraphDocStore(AbstractDocumentStore, nx.MultiDiGraph):
             raise ValueError(f"Document with hash {doc_hash} not found")
 
         chunk_hash = sha256(chunk_text.encode()).hexdigest()
-        self.add_node(chunk_hash, partition="chunk", text=chunk_text)
-        self.add_edge(doc_hash, chunk_hash, partition="document_chunk")
-        self._save()
+        self._graph.add_node(chunk_hash, partition="chunk", text=chunk_text)
+        self._graph.add_edge(doc_hash, chunk_hash, partition="document_chunk")
+        # self._save()
+
+    def nodes(self, partition: Optional[str] = None, **attr) -> list:
+        """Get nodes from the graph, optionally filtered by partition and attributes.
+
+        :param partition: Partition to filter nodes by
+        :param attr: Additional node attributes to filter by
+        :return: List of node identifiers
+        """
+        if partition is not None:
+            attr["partition"] = partition
+        return [
+            n
+            for n, d in self._graph.nodes(data=True)
+            if all(d.get(k) == v for k, v in attr.items())
+        ]
 
     def add_entity(self, chunk_hash: str, entity: Entity) -> None:
         """Add entity to docstore and link to chunk.
@@ -140,15 +162,15 @@ class KnowledgeGraphDocStore(AbstractDocumentStore, nx.MultiDiGraph):
 
         # If entity already exists, combine using __add__ operator
         if entity_hash in self.nodes(partition="entity"):
-            existing_entity = self.nodes[entity_hash]["pydantic_model"]
+            existing_entity = self._graph.nodes[entity_hash]["pydantic_model"]
             combined_entity = existing_entity + entity
-            self.nodes[entity_hash]["pydantic_model"] = combined_entity
+            self._graph.nodes[entity_hash]["pydantic_model"] = combined_entity
         else:
             # Add new entity if it doesn't exist
-            self.add_node(entity_hash, partition="entity", pydantic_model=entity)
+            self._graph.add_node(entity_hash, partition="entity", pydantic_model=entity)
 
-        self.add_edge(chunk_hash, entity_hash, partition="chunk_entity")
-        self._save()
+        self._graph.add_edge(chunk_hash, entity_hash, partition="chunk_entity")
+        # self._save()
 
     def add_relation(self, chunk_hash: str, relation: Relationship) -> None:
         """Add relation to docstore.
@@ -165,20 +187,20 @@ class KnowledgeGraphDocStore(AbstractDocumentStore, nx.MultiDiGraph):
         target_hash = target.hash()
 
         # Check if edge already exists
-        if self.has_edge(source_hash, target_hash):
-            existing_data = self.edges[source_hash, target_hash]
+        if self._graph.has_edge(source_hash, target_hash):
+            existing_data = self._graph.edges[source_hash, target_hash]
             if existing_data["pydantic_model"].relation_type == relation.relation_type:
                 # Reconstruct existing relationship and combine with new one
                 existing_relation = existing_data["pydantic_model"]
                 combined_relation = existing_relation + relation
                 chunk_hashes = list(set(existing_data["chunk_hash"] + [chunk_hash]))
-                self.edges[source_hash, target_hash] = {
+                self._graph.edges[source_hash, target_hash] = {
                     "pydantic_model": combined_relation,
                     "chunk_hashes": chunk_hashes,
                 }
             else:
                 # Different relation type, add as new edge
-                self.add_edge(
+                self._graph.add_edge(
                     source_hash,
                     target_hash,
                     pydantic_model=relation,
@@ -186,14 +208,14 @@ class KnowledgeGraphDocStore(AbstractDocumentStore, nx.MultiDiGraph):
                 )
         else:
             # Add new edge if it doesn't exist
-            self.add_edge(
+            self._graph.add_edge(
                 source_hash,
                 target_hash,
                 pydantic_model=relation,
                 chunk_hashes=[chunk_hash],
             )
 
-        self._save()
+        # self._save()
 
     def add_community(self, community: Community) -> None:
         """Add community to docstore.
@@ -203,15 +225,16 @@ class KnowledgeGraphDocStore(AbstractDocumentStore, nx.MultiDiGraph):
         :param community: Community object
         """
         for entity in community.entities:
-            self.nodes[entity.hash()]["community"] = community.hash()
+            self._graph.nodes[entity.hash()]["community"] = community.hash()
             self.communities[community.hash()] = community
-        self._save()
+        # self._save()
 
     def append(self, document: str):
         """Append a document to the docstore."""
         # Firstly, add the document
-        doc_hash = self.add_document(document)
+        self.add_document(document)
 
+        doc_hash = sha256(document.encode()).hexdigest()
         # Then, chunk the document and add the chunks
         chunks = self.chunker.chunk(document)
         for chunk in chunks:
@@ -237,7 +260,7 @@ class KnowledgeGraphDocStore(AbstractDocumentStore, nx.MultiDiGraph):
                 )
             )
             for relation in relationships:
-                self.add_relation(relation)
+                self.add_relation(chunk_hash, relation)
 
         # Now, deduplicate entities.
         similar_entities = identify_levenshtein_similar(self.entities)
@@ -252,8 +275,8 @@ class KnowledgeGraphDocStore(AbstractDocumentStore, nx.MultiDiGraph):
         self.deduplicate_entities(entity_groups_to_deduplicate)
 
         # Identify communities in the graph and add them to the docstore.
-        entity_nodes = [e.hash() for e in self.entities]
-        entity_subgraph = self.subgraph(entity_nodes)
+        entity_nodes: list[str] = [e.hash() for e in self.entities]
+        entity_subgraph: nx.MultiDiGraph = self._graph.subgraph(entity_nodes)
         # communities is a list of lists of entity hashes
         communities: list[list[str]] = louvain_communities(
             entity_subgraph.to_undirected()
@@ -276,7 +299,7 @@ class KnowledgeGraphDocStore(AbstractDocumentStore, nx.MultiDiGraph):
                     summary=community_summary_response.summary,
                 )
             )
-        self._save()
+        # self._save()
 
     @property
     def entities(self) -> Entities:
@@ -387,7 +410,7 @@ class KnowledgeGraphDocStore(AbstractDocumentStore, nx.MultiDiGraph):
     def reset(self) -> None:
         """Reset the document store."""
         self.__init__(storage_path=self.storage_path)
-        self._save()
+        # self._save()
 
     def _save(self) -> None:
         """Save the docstore to disk."""
@@ -467,18 +490,6 @@ class KnowledgeGraphDocStore(AbstractDocumentStore, nx.MultiDiGraph):
         """
         # Create mapping from old entity hashes to new (canonical) entity hashes
         hash_mapping = {}
-        new_entity_index = {}
-
-        # First, copy over all entities that aren't being deduplicated
-        all_entities_to_dedupe = [
-            entity.hash()
-            for entities in entity_groups_to_deduplicate.values()
-            for entity in entities
-        ]
-        for entity_hash, entity in self.entity_index.items():
-            if entity_hash not in all_entities_to_dedupe:
-                new_entity_index[entity_hash] = entity
-                hash_mapping[entity_hash] = entity_hash
 
         # Then handle the deduplication groups
         for entities in entity_groups_to_deduplicate.values():
@@ -489,68 +500,27 @@ class KnowledgeGraphDocStore(AbstractDocumentStore, nx.MultiDiGraph):
             merged_entity = canonical_entity
             for entity in entities[1:]:
                 merged_entity = merged_entity + entity
-                hash_mapping[entity.hash()] = canonical_hash
+                old_hash = entity.hash()
+                hash_mapping[old_hash] = canonical_hash
 
-            new_entity_index[canonical_hash] = merged_entity
+                # Rewire all edges from old entity to canonical entity
+                for _, neighbor, edge_data in self._graph.out_edges(
+                    old_hash, data=True
+                ):
+                    self._graph.add_edge(canonical_hash, neighbor, **edge_data)
+                for neighbor, _, edge_data in self._graph.in_edges(old_hash, data=True):
+                    self._graph.add_edge(neighbor, canonical_hash, **edge_data)
+                self._graph.remove_node(old_hash)
+
+            # Update the canonical entity in the graph
+            if canonical_hash in self._graph:
+                self._graph.nodes[canonical_hash]["entity"] = merged_entity
+            else:
+                self._graph.add_node(canonical_hash, entity=merged_entity)
             hash_mapping[canonical_hash] = canonical_hash
 
-        # Update entity index
-        self.entity_index = new_entity_index
-
-        # Update relation index to use new entity hashes
-        new_relation_index = {}
-        for rel_hash, relation in self.relation_index.items():
-            source_hash = hash_mapping.get(
-                relation.source.hash(), relation.source.hash()
-            )
-            target_hash = hash_mapping.get(
-                relation.target.hash(), relation.target.hash()
-            )
-
-            # Create new relation with updated entity references
-            new_relation = Relationship(
-                source=new_entity_index[source_hash].model_dump(),
-                target=new_entity_index[target_hash].model_dump(),
-                relation_type=relation.relation_type,
-                summary=relation.summary,
-            )
-            new_relation_index[new_relation.hash()] = new_relation
-        self.relation_index = new_relation_index
-
-        # Update chunk-entity links
-        new_chunk_entity_links = {}
-        for chunk_hash, entity_hashes in self.chunk_entity_links.items():
-            new_chunk_entity_links[chunk_hash] = {
-                hash_mapping.get(eh, eh) for eh in entity_hashes
-            }
-        self.chunk_entity_links = new_chunk_entity_links
-
-        # Update chunk-relation links
-        new_chunk_relation_links = {}
-        for chunk_hash, relation_hashes in self.chunk_relation_links.items():
-            new_chunk_relation_links[chunk_hash] = set(relation_hashes)
-        self.chunk_relation_links = new_chunk_relation_links
-
-        # Update entity-chunk links
-        new_entity_chunk_links = {}
-        for entity_hash, chunk_hashes in self.entity_chunk_links.items():
-            canonical_hash = hash_mapping.get(entity_hash, entity_hash)
-            if canonical_hash not in new_entity_chunk_links:
-                new_entity_chunk_links[canonical_hash] = set()
-            new_entity_chunk_links[canonical_hash].update(chunk_hashes)
-        self.entity_chunk_links = new_entity_chunk_links
-
-        # Update entity-community links
-        new_entity_community_links = {}
-        for entity_hash, community_hashes in self.entity_community_links.items():
-            canonical_hash = hash_mapping.get(entity_hash, entity_hash)
-            if canonical_hash not in new_entity_community_links:
-                new_entity_community_links[canonical_hash] = set()
-            new_entity_community_links[canonical_hash].update(community_hashes)
-        self.entity_community_links = new_entity_community_links
-
         # Save changes
-        self._save()
+        # self._save()
 
 
 """Network graph representation of GraphRAG data."""
