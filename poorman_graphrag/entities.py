@@ -11,6 +11,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Literal
 
+import llamabot as lmb
 from pydantic import BaseModel, Field, model_validator
 from thefuzz import fuzz
 
@@ -261,6 +262,40 @@ def identify_levenshtein_similar(
     return similar_groups
 
 
+@lmb.prompt("system")
+def entity_extractor_prompt():
+    """You are an expert at extracting entities from text. Given a chunk of text,
+    identify entities mentioned in the text. You will be optionally provided with
+    a list of existing entities that can be reused."""
+
+
+@lmb.prompt("user")
+def entity_extractor_user_prompt(text: str, existing_entities: str):
+    """Here is a chunk of text to process:
+
+    {{ text }}
+
+    -----
+
+    And here are existing entities:
+
+    {{ existing_entities }}
+    """
+
+
+def get_entity_extractor() -> lmb.StructuredBot:
+    """Get an entity extractor.
+
+    :return: Entity extractor
+    """
+    return lmb.StructuredBot(
+        system_prompt=entity_extractor_prompt(),
+        pydantic_model=Entities,
+        model_name="gpt-4o",
+    )
+
+
+###
 ###
 
 # def identify_exact_duplicates(entities: "Entities") -> Dict[tuple, list]:

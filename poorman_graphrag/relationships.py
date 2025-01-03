@@ -12,6 +12,7 @@ analysis.
 
 import hashlib
 
+import llamabot as lmb
 from pydantic import BaseModel, Field
 
 from poorman_graphrag.entities import Entity
@@ -128,3 +129,32 @@ class Relationships(BaseModel):
         :return: True if relationship exists in collection, False otherwise
         """
         return item in self.relationships
+
+
+@lmb.prompt("system")
+def relationship_extractor_prompt():
+    """You are an expert at extracting relationships from text. Given a chunk of text,
+    identify relationships between entities mentioned in the text."""
+
+
+def get_relationship_extractor() -> lmb.StructuredBot:
+    """Get a relationship extractor."""
+    return lmb.StructuredBot(
+        pydantic_model=Relationship,
+        system_prompt=relationship_extractor_prompt(),
+        model_name="gpt-4o",
+    )
+
+
+@lmb.prompt("user")
+def relationship_extractor_user_prompt(chunk_text: str, existing_entities: str) -> str:
+    """Here is a chunk of text to process:
+
+    {{ chunk_text }}
+
+    -----
+
+    And here are existing entities:
+
+    {{ existing_entities }}
+    """

@@ -1,5 +1,6 @@
 """Knowledge Graph document store for LlamaBot."""
 
+import json
 from hashlib import sha256
 from pathlib import Path
 from typing import Dict, List, Optional, Set
@@ -11,36 +12,59 @@ from llamabot.components.docstore import AbstractDocumentStore
 from networkx.algorithms.community import louvain_communities
 
 from poorman_graphrag.communities import (
-    Communities,
     Community,
     community_content,
     get_community_summarizer,
 )
-from poorman_graphrag.entities import Entities, Entity, identify_levenshtein_similar
+from poorman_graphrag.entities import (
+    Entities,
+    Entity,
+    entity_extractor_user_prompt,
+    get_entity_extractor,
+    identify_levenshtein_similar,
+)
 from poorman_graphrag.entity_deduplication import get_entity_judge, is_same_entity
-from poorman_graphrag.relationships import Relationship, Relationships
+from poorman_graphrag.relationships import (
+    Relationship,
+    Relationships,
+    get_relationship_extractor,
+    relationship_extractor_user_prompt,
+)
 
 
-class KnowledgeGraphDocStore(AbstractDocumentStore):
+class KnowledgeGraphDocStore(AbstractDocumentStore, nx.MultiDiGraph):
     """Knowledge Graph document store for LlamaBot.
+
+    This class extends both `AbstractDocumentStore` and `nx.MultiDiGraph`.
+    It is used to store and manage a knowledge graph.
+
+    We model the graph's nodes with multiple partitions:
+
+    - `document` nodes: represent the documents that have been added to the docstore
+    - `chunk` nodes: represent the chunks of text
+      that have been extracted from the documents
+    - `entity` nodes: represent the entities that have been extracted from the chunks
+
+    Relationships are stored in the graph's edges directly.
+    Community labels are annotated directly onto the nodes.
 
     :param storage_path: Path to JSON file for persistent storage
     """
 
     def __init__(
-        self, storage_path: Path | str = Path.home() / ".llamabot" / "kg_docstore.json"
+        self,
+        storage_path: Path | str = Path.home() / ".llamabot" / "kg_docstore.json",
+        entity_extractor: Optional[lmb.StructuredBot] = None,
+        entity_extractor_userprompt: Optional[str] = None,
+        relationship_extractor: Optional[lmb.StructuredBot] = None,
+        relationship_extractor_userprompt: Optional[str] = None,
+        entity_similarity_judge: Optional[lmb.StructuredBot] = None,
+        entity_similarity_judge_userprompt: Optional[str] = None,
+        community_summarizer: Optional[lmb.StructuredBot] = None,
+        community_summarizer_userprompt: Optional[str] = None,
     ):
         self.storage_path = Path(storage_path)
-        self.doc_index: Dict[str, str] = {}
-        self.chunk_index: Dict[str, str] = {}
-        self.entity_index: Dict[str, Entity] = {}
-        self.relation_index: Dict[str, Relationship] = {}
-        self.community_index: Dict[str, Community] = {}
-        self.doc_chunk_links: Dict[str, Set[str]] = {}
-        self.chunk_entity_links: Dict[str, Set[str]] = {}
-        self.chunk_relation_links: Dict[str, Set[str]] = {}
-        self.entity_chunk_links: Dict[str, Set[str]] = {}
-        self.entity_community_links: Dict[str, Set[str]] = {}
+        self.communities: Dict[str, Community] = {}
 
         # Load existing data if available
         if self.storage_path.exists():
@@ -52,119 +76,136 @@ class KnowledgeGraphDocStore(AbstractDocumentStore):
         # Instantiate chunker
         self.chunker = SDPMChunker()
 
-    def add_document(self, text: str) -> str:
+        # Instantiate entity extractor
+        self.entity_extractor = entity_extractor or get_entity_extractor()
+        self.entity_extractor_user_prompt = (
+            entity_extractor_userprompt or entity_extractor_user_prompt
+        )
+
+        # Instantiate relationship extractor
+        self.relationship_extractor = (
+            relationship_extractor or get_relationship_extractor()
+        )
+        self.relationship_extractor_user_prompt = (
+            relationship_extractor_userprompt or relationship_extractor_user_prompt
+        )
+
+        # Instantiate entity similarity judge
+        self.entity_similarity_judge = entity_similarity_judge or get_entity_judge()
+        self.entity_similarity_judge_user_prompt = (
+            entity_similarity_judge_userprompt or is_same_entity
+        )
+
+        # Instantiate community summarizer
+        self.community_summarizer = community_summarizer or get_community_summarizer()
+        self.community_summarizer_user_prompt = (
+            community_summarizer_userprompt or community_content
+        )
+
+    def add_document(self, text: str) -> None:
         """Add document to docstore.
 
         :param text: Document text
         :return: Document hash
         """
         doc_hash = sha256(text.encode()).hexdigest()
-        self.doc_index[doc_hash] = text
-        self.doc_chunk_links[doc_hash] = set()
+        self.add_node(doc_hash, partition="document", text=text)
         self._save()
-        return doc_hash
 
-    def add_chunk(self, doc_hash: str, chunk_text: str) -> str:
+    def add_chunk(self, doc_hash: str, chunk_text: str) -> None:
         """Add chunk to docstore and link to document.
 
         :param doc_hash: Hash of parent document
         :param chunk_text: Chunk text
         :return: Chunk hash
         """
-        if doc_hash not in self.doc_index:
+        if doc_hash not in self.nodes(partition="document"):
             raise ValueError(f"Document with hash {doc_hash} not found")
 
         chunk_hash = sha256(chunk_text.encode()).hexdigest()
-        self.chunk_index[chunk_hash] = chunk_text
-        self.chunk_entity_links[chunk_hash] = set()
-        self.chunk_relation_links[chunk_hash] = set()
-        self.doc_chunk_links[doc_hash].add(chunk_hash)
+        self.add_node(chunk_hash, partition="chunk", text=chunk_text)
+        self.add_edge(doc_hash, chunk_hash, partition="document_chunk")
         self._save()
-        return chunk_hash
 
-    def add_entities(self, chunk_hash: str, entities: Entities) -> List[str]:
-        """Add entities to docstore and link to chunk.
-        If an entity with the same hash already exists,
-        merges the new entity with the existing one.
+    def add_entity(self, chunk_hash: str, entity: Entity) -> None:
+        """Add entity to docstore and link to chunk.
+
+        If the entity already exists, combines the summaries of both entities.
 
         :param chunk_hash: Hash of parent chunk
-        :param entities: List of Entity objects
-        :return: List of entity hashes
+        :param entity: Entity object
+        :return: Entity hash
         """
-        if chunk_hash not in self.chunk_index:
-            raise ValueError(f"Chunk with hash {chunk_hash} not found")
+        entity_hash = entity.hash()
 
-        entity_hashes = []
-        for entity in entities:
-            entity_hash = entity.hash()
-            if entity_hash in self.entity_index:
-                # Merge with existing entity
-                self.entity_index[entity_hash] = self.entity_index[entity_hash] + entity
+        # If entity already exists, combine using __add__ operator
+        if entity_hash in self.nodes(partition="entity"):
+            existing_entity = self.nodes[entity_hash]["pydantic_model"]
+            combined_entity = existing_entity + entity
+            self.nodes[entity_hash]["pydantic_model"] = combined_entity
+        else:
+            # Add new entity if it doesn't exist
+            self.add_node(entity_hash, partition="entity", pydantic_model=entity)
+
+        self.add_edge(chunk_hash, entity_hash, partition="chunk_entity")
+        self._save()
+
+    def add_relation(self, chunk_hash: str, relation: Relationship) -> None:
+        """Add relation to docstore.
+
+        If a relationship between the same entities with the same type already exists,
+        combines the summaries of both relationships.
+
+        :param relation: Relation object
+        :return: Relation hash
+        """
+        source: Entity = relation.source
+        target: Entity = relation.target
+        source_hash = source.hash()
+        target_hash = target.hash()
+
+        # Check if edge already exists
+        if self.has_edge(source_hash, target_hash):
+            existing_data = self.edges[source_hash, target_hash]
+            if existing_data["pydantic_model"].relation_type == relation.relation_type:
+                # Reconstruct existing relationship and combine with new one
+                existing_relation = existing_data["pydantic_model"]
+                combined_relation = existing_relation + relation
+                chunk_hashes = list(set(existing_data["chunk_hash"] + [chunk_hash]))
+                self.edges[source_hash, target_hash] = {
+                    "pydantic_model": combined_relation,
+                    "chunk_hashes": chunk_hashes,
+                }
             else:
-                self.entity_index[entity_hash] = entity
-
-            # Set up entity-chunk links
-            if entity_hash not in self.entity_chunk_links:
-                self.entity_chunk_links[entity_hash] = set()
-            self.entity_chunk_links[entity_hash].add(chunk_hash)
-
-            self.chunk_entity_links[chunk_hash].add(entity_hash)
-            entity_hashes.append(entity_hash)
+                # Different relation type, add as new edge
+                self.add_edge(
+                    source_hash,
+                    target_hash,
+                    pydantic_model=relation,
+                    chunk_hashes=[chunk_hash],
+                )
+        else:
+            # Add new edge if it doesn't exist
+            self.add_edge(
+                source_hash,
+                target_hash,
+                pydantic_model=relation,
+                chunk_hashes=[chunk_hash],
+            )
 
         self._save()
-        return entity_hashes
 
-    def add_relations(self, chunk_hash: str, relations: Relationships) -> List[str]:
-        """Add relations to docstore and link to chunk.
-        Also adds any new entities found in the relations.
+    def add_community(self, community: Community) -> None:
+        """Add community to docstore.
 
-        :param chunk_hash: Hash of parent chunk
-        :param relations: List of Relation objects
-        :return: List of relation hashes
+        Communities are annotated directly onto the nodes using the "community" kwarg.
+
+        :param community: Community object
         """
-        if chunk_hash not in self.chunk_index:
-            raise ValueError(f"Chunk with hash {chunk_hash} not found")
-
-        # First collect all entities from relations
-        new_entities = []
-        for relation in relations:
-            new_entities.extend([relation.source, relation.target])
-
-        # Add any new entities
-        self.add_entities(chunk_hash, new_entities)
-
-        # Now add the relations
-        relation_hashes = []
-        for relation in relations:
-            relation_hash = relation.hash()
-            self.relation_index[relation_hash] = relation
-            self.chunk_relation_links[chunk_hash].add(relation_hash)
-            relation_hashes.append(relation_hash)
-
+        for entity in community.entities:
+            self.nodes[entity.hash()]["community"] = community.hash()
+            self.communities[community.hash()] = community
         self._save()
-        return relation_hashes
-
-    def add_communities(self, communities: Communities) -> List[str]:
-        """Add communities to the docstore.
-
-        :param communities: Communities object containing communities to add
-        :return: List of community hashes
-        """
-        community_hashes = []
-        for community in communities.communities:
-            community_hash = community.hash()
-            self.community_index[community_hash] = community
-            community_hashes.append(community_hash)
-
-            # Update entity_community_links for each entity in the community
-            for entity in community.entities:
-                if entity.hash() in self.entity_index:  # Only link if it's an entity
-                    if entity.hash() not in self.entity_community_links:
-                        self.entity_community_links[entity.hash()] = set()
-                    self.entity_community_links[entity.hash()].add(community_hash)
-
-        self._save()
-        return community_hashes
 
     def append(self, document: str):
         """Append a document to the docstore."""
@@ -177,118 +218,93 @@ class KnowledgeGraphDocStore(AbstractDocumentStore):
             self.add_chunk(doc_hash, chunk.text)
 
         # Now, extract entities from the chunks
-        entity_extractor = lmb.StructuredBot(
-            system_prompt=(
-                "You are an expert at extracting entities from text. Given a chunk of "
-                "text, identify entities mentioned in the text. "
-                "You will be optionally provided with a list of existing entities that "
-                "can be reused."
-            ),
-            pydantic_model=Entities,
-        )
         for chunk in chunks:
             chunk_hash = sha256(chunk.text.encode()).hexdigest()
-            existing_entities = "\n".join(
-                [e.model_dump_json() for e in self.entity_index.values()]
-            )
-            entities = entity_extractor(
-                lmb.user(
-                    "Here is chunk to process:\n",
-                    chunk.text,
-                    "\n-----\n",
-                    "\nHere are existing entities:\n",
-                    existing_entities,
+            entities: Entities = self.entity_extractor(
+                self.entity_extractor_user_prompt(
+                    chunk.text, self.entities.model_dump_json()
                 )
             )
-            self.add_entities(chunk_hash, entities)
+            for entity in entities:
+                self.add_entity(chunk_hash, entity)
 
         # Now, extract entities and relations from the chunks
-        relationship_extractor = lmb.StructuredBot(
-            system_prompt=(
-                "You are an expert at extracting relationships between "
-                "entities in text. Given a chunk of text, identify relationships "
-                "between entities mentioned in the text. You will be optionally "
-                "provided with a list of existing entities that can be reused. "
-                "Reuse entities where possible. "
-            ),
-            pydantic_model=Relationships,
-        )
-
         for chunk in chunks:
-            existing_entities = "\n".join(
-                [e.model_dump_json() for e in self.entity_index.values()]
-            )
             chunk_hash = sha256(chunk.text.encode()).hexdigest()
-            relationships = relationship_extractor(
-                lmb.user(
-                    "Text chunk:\n",
-                    chunk.text,
-                    "\n-----\n",
-                    "Existing entities:\n",
-                    existing_entities,
+            relationships: Relationships = self.relationship_extractor(
+                self.relationship_extractor_user_prompt(
+                    chunk.text, self.entities.model_dump_json()
                 )
             )
-            self.add_relations(chunk_hash, relationships)
+            for relation in relationships:
+                self.add_relation(relation)
 
         # Now, deduplicate entities.
         similar_entities = identify_levenshtein_similar(self.entities)
-        same_entity_judge = get_entity_judge()
         entity_groups_to_deduplicate = {}
         for entity_type, entities in similar_entities.items():
-            result = same_entity_judge(is_same_entity(entities))
+            result = self.entity_similarity_judge(
+                self.entity_similarity_judge_user_prompt(entities)
+            )
             if result:
                 entity_groups_to_deduplicate[entity_type] = entities
 
         self.deduplicate_entities(entity_groups_to_deduplicate)
 
         # Identify communities in the graph and add them to the docstore.
-        G = build_network(self)
-        communities = louvain_communities(G.to_undirected())
-        communities_to_add = []
-        community_summarizer = get_community_summarizer()
+        entity_nodes = [e.hash() for e in self.entities]
+        entity_subgraph = self.subgraph(entity_nodes)
+        # communities is a list of lists of entity hashes
+        communities: list[list[str]] = louvain_communities(
+            entity_subgraph.to_undirected()
+        )
         for community in communities:
-            content = community_content(
-                G.subgraph(community).nodes(data=True),
-                G.subgraph(community).edges(data=True),
+            content = self.community_summarizer_user_prompt(
+                entity_subgraph.subgraph(community).nodes(data=True),
+                entity_subgraph.subgraph(community).edges(data=True),
             )
-            community_summary_response = community_summarizer(content)
-            print("--------------------------------")
-            print(G.subgraph(community).nodes(data=True))
-            print("--------------------------------")
-            # Convert node data back into Entity objects
-            community_entities = []
-            for node_id, node_data in G.subgraph(community).nodes(data=True):
-                if node_data.get("type") == "entity":
-                    entity = Entity(
-                        entity_type=node_data["entity_type"],
-                        name=node_data["name"],
-                        summary=node_data["summary"],
-                    )
-                    community_entities.append(entity)
+            community_summary_response = self.community_summarizer(content)
 
-            communities_to_add.append(
+            self.add_community(
                 Community(
                     entities=Entities(
-                        entities=[e.model_dump() for e in community_entities]
+                        entities=[
+                            self.nodes[ent]["pydantic_model"].model_dump()
+                            for ent in community
+                        ]
                     ),
                     summary=community_summary_response.summary,
                 )
             )
-        self.add_communities(
-            Communities(communities=[c.model_dump() for c in communities_to_add])
-        )
-
         self._save()
-
-    # Just some notes for myself right now:
-    # 1. I'm quite uncomfortable with how this DocStore contains StructuredBots.
-    #    This feels like it should be separated out.
-    # 2. Maybe the docstore should just accept a NetworkX graph instead.
 
     @property
     def entities(self) -> Entities:
         """Get all entities in the docstore."""
-        return Entities(entities=list(self.entity_index.values()))
+        entity_nodes = [
+            data["pydantic_model"]
+            for _, data in self.nodes(data=True)
+            if data.get("partition") == "entity"
+        ]
+        return Entities(entities=entity_nodes)
+
+    @property
+    def documents(self) -> list[str]:
+        """Get all documents in the docstore."""
+        return [
+            data["text"]
+            for _, data in self.nodes(data=True)
+            if data.get("partition") == "document"
+        ]
+
+    @property
+    def chunks(self) -> list[str]:
+        """Get all chunks in the docstore."""
+        return [
+            data["text"]
+            for _, data in self.nodes(data=True)
+            if data.get("partition") == "chunk"
+        ]
 
     def retrieve(
         self,
@@ -375,7 +391,6 @@ class KnowledgeGraphDocStore(AbstractDocumentStore):
 
     def _save(self) -> None:
         """Save the docstore to disk."""
-        import json
 
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -409,7 +424,6 @@ class KnowledgeGraphDocStore(AbstractDocumentStore):
 
     def _load(self) -> None:
         """Load the docstore from disk."""
-        import json
 
         with self.storage_path.open("r") as f:
             data = json.load(f)
