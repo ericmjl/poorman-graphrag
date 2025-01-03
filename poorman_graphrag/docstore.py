@@ -9,6 +9,7 @@ import llamabot as lmb
 import networkx as nx
 from chonkie import SDPMChunker
 from llamabot.components.docstore import AbstractDocumentStore
+from loguru import logger
 from networkx.algorithms.community import louvain_communities
 
 from poorman_graphrag.communities import (
@@ -175,8 +176,9 @@ class KnowledgeGraphDocStore(AbstractDocumentStore):
     def add_relation(self, chunk_hash: str, relation: Relationship) -> None:
         """Add relation to docstore.
 
-        If a relationship between the same entities with the same type already exists,
-        combines the summaries of both relationships.
+        Because we are using MultiDiGraph objects,
+        There is absolutely no need to check if edges already exist.
+        We can just add a new edge with a unique key.
 
         :param relation: Relation object
         :return: Relation hash
@@ -186,35 +188,14 @@ class KnowledgeGraphDocStore(AbstractDocumentStore):
         source_hash = source.hash()
         target_hash = target.hash()
 
-        # Check if edge already exists
-        if self._graph.has_edge(source_hash, target_hash):
-            existing_data = self._graph.edges[source_hash, target_hash]
-            if existing_data["pydantic_model"].relation_type == relation.relation_type:
-                # Reconstruct existing relationship and combine with new one
-                existing_relation = existing_data["pydantic_model"]
-                combined_relation = existing_relation + relation
-                chunk_hashes = list(set(existing_data["chunk_hash"] + [chunk_hash]))
-                self._graph.edges[source_hash, target_hash] = {
-                    "pydantic_model": combined_relation,
-                    "chunk_hashes": chunk_hashes,
-                }
-            else:
-                # Different relation type, add as new edge
-                self._graph.add_edge(
-                    source_hash,
-                    target_hash,
-                    pydantic_model=relation,
-                    chunk_hashes=[chunk_hash],
-                )
-        else:
-            # Add new edge if it doesn't exist
-            self._graph.add_edge(
-                source_hash,
-                target_hash,
-                pydantic_model=relation,
-                chunk_hashes=[chunk_hash],
-            )
-
+        # Always add a new edge with a unique key
+        self._graph.add_edge(
+            source_hash,
+            target_hash,
+            key=relation.hash(),
+            pydantic_model=relation,
+            chunk_hashes=[chunk_hash],
+        )
         # self._save()
 
     def add_community(self, community: Community) -> None:
@@ -281,6 +262,7 @@ class KnowledgeGraphDocStore(AbstractDocumentStore):
         communities: list[list[str]] = louvain_communities(
             entity_subgraph.to_undirected()
         )
+        logger.info(f"Found {len(communities)} communities")
         for community in communities:
             content = self.community_summarizer_user_prompt(
                 entity_subgraph.subgraph(community).nodes(data=True),
@@ -413,65 +395,93 @@ class KnowledgeGraphDocStore(AbstractDocumentStore):
         # self._save()
 
     def _save(self) -> None:
-        """Save the docstore to disk."""
+        """Save the docstore to disk.
 
+        Saves the graph structure and all node/edge data to a JSON file.
+        Creates parent directories if they don't exist.
+        """
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)
 
-        data = {
-            "doc_index": self.doc_index,
-            "chunk_index": self.chunk_index,
-            "entity_index": {k: v.model_dump() for k, v in self.entity_index.items()},
-            "relation_index": {
-                k: v.model_dump() for k, v in self.relation_index.items()
-            },
-            "community_index": {
-                k: v.model_dump() for k, v in self.community_index.items()
-            },
-            "doc_chunk_links": {k: list(v) for k, v in self.doc_chunk_links.items()},
-            "chunk_entity_links": {
-                k: list(v) for k, v in self.chunk_entity_links.items()
-            },
-            "chunk_relation_links": {
-                k: list(v) for k, v in self.chunk_relation_links.items()
-            },
-            "entity_chunk_links": {
-                k: list(v) for k, v in self.entity_chunk_links.items()
-            },
-            "entity_community_links": {
-                k: list(v) for k, v in self.entity_community_links.items()
-            },
-        }
+        # Convert graph data to serializable format
+        data = {"nodes": {}, "edges": {}}
+
+        # Save nodes with their attributes
+        for node, attrs in self._graph.nodes(data=True):
+            node_data = attrs.copy()
+
+            # Handle special node attributes that need custom serialization
+            if "pydantic_model" in node_data:
+                node_data["pydantic_model"] = node_data["pydantic_model"].model_dump()
+
+            data["nodes"][node] = node_data
+
+        # Save edges with their attributes
+        for u, v, k, attrs in self._graph.edges(data=True, keys=True):
+            edge_key = f"{u}|{v}|{k}"
+            edge_data = attrs.copy()
+
+            # Handle special edge attributes that need custom serialization
+            if "pydantic_model" in edge_data:
+                edge_data["pydantic_model"] = edge_data["pydantic_model"].model_dump()
+            if "chunk_hashes" in edge_data:
+                edge_data["chunk_hashes"] = list(edge_data["chunk_hashes"])
+
+            data["edges"][edge_key] = {
+                "source": u,
+                "target": v,
+                "key": k,
+                "data": edge_data,
+            }
+
+        # Save communities
+        data["communities"] = {k: v.model_dump() for k, v in self.communities.items()}
 
         with self.storage_path.open("w") as f:
             json.dump(data, f)
 
     def _load(self) -> None:
-        """Load the docstore from disk."""
+        """Load the docstore from disk.
+
+        Loads the graph structure and all node/edge data from a JSON file.
+        """
+        if not self.storage_path.exists():
+            return
 
         with self.storage_path.open("r") as f:
             data = json.load(f)
 
-        self.doc_index = data["doc_index"]
-        self.chunk_index = data["chunk_index"]
-        self.entity_index = {k: Entity(**v) for k, v in data["entity_index"].items()}
-        self.relation_index = {
-            k: Relationship(**v) for k, v in data["relation_index"].items()
-        }
-        self.community_index = {
-            k: Community(**v) for k, v in data["community_index"].items()
-        }
-        self.doc_chunk_links = {k: set(v) for k, v in data["doc_chunk_links"].items()}
-        self.chunk_entity_links = {
-            k: set(v) for k, v in data["chunk_entity_links"].items()
-        }
-        self.chunk_relation_links = {
-            k: set(v) for k, v in data["chunk_relation_links"].items()
-        }
-        self.entity_chunk_links = {
-            k: set(v) for k, v in data["entity_chunk_links"].items()
-        }
-        self.entity_community_links = {
-            k: set(v) for k, v in data["entity_community_links"].items()
+        # Load nodes with their attributes
+        for node, node_data in data["nodes"].items():
+            # Handle special node attributes that need custom deserialization
+            if "pydantic_model" in node_data:
+                if node_data["partition"] == "entity":
+                    node_data["pydantic_model"] = Entity(**node_data["pydantic_model"])
+                elif node_data["partition"] == "community":
+                    node_data["pydantic_model"] = Community(
+                        **node_data["pydantic_model"]
+                    )
+            self._graph.add_node(node, **node_data)
+
+        # Load edges with their attributes
+        for edge_key, edge_info in data["edges"].items():
+            u = edge_info["source"]
+            v = edge_info["target"]
+            k = edge_info["key"]
+            edge_data = edge_info["data"]
+
+            # Handle special edge attributes that need custom deserialization
+            if "pydantic_model" in edge_data:
+                edge_data["pydantic_model"] = Relationship(
+                    **edge_data["pydantic_model"]
+                )
+            if "chunk_hashes" in edge_data:
+                edge_data["chunk_hashes"] = list(edge_data["chunk_hashes"])
+
+            self._graph.add_edge(u, v, key=k, **edge_data)
+
+        # Load communities
+        self.communities = {
+            k: Community(**v) for k, v in data.get("communities", {}).items()
         }
 
     def deduplicate_entities(
@@ -521,148 +531,3 @@ class KnowledgeGraphDocStore(AbstractDocumentStore):
 
         # Save changes
         # self._save()
-
-
-"""Network graph representation of GraphRAG data."""
-
-
-# from poorman_graphrag.docstore import KnowledgeGraphDocStore
-
-
-def build_network(
-    docstore: "KnowledgeGraphDocStore",
-    include_documents: bool = False,
-    include_chunks: bool = False,
-) -> nx.MultiDiGraph:
-    """Build a NetworkX graph from a KnowledgeGraphDocStore.
-
-    The graph will contain nodes for entities and relationships, with optional
-    document and chunk nodes. Edges represent the connections between these elements.
-
-    :param docstore: KnowledgeGraphDocStore instance to convert to a network
-    :param include_documents: Whether to include document nodes in the graph
-    :param include_chunks: Whether to include chunk nodes in the graph
-    :return: NetworkX MultiDiGraph containing the network representation
-    """
-    G = nx.MultiDiGraph()
-
-    # Add document nodes if requested
-    if include_documents:
-        for doc_hash, doc_text in docstore.doc_index.items():
-            G.add_node(doc_hash, type="document", text=doc_text)
-
-    # Add chunk nodes and connect to documents if requested
-    if include_chunks:
-        for chunk_hash, chunk_text in docstore.chunk_index.items():
-            G.add_node(chunk_hash, type="chunk", text=chunk_text)
-
-            # Find parent document and add edge if documents are included
-            if include_documents:
-                for doc_hash, chunk_hashes in docstore.doc_chunk_links.items():
-                    if chunk_hash in chunk_hashes:
-                        G.add_edge(doc_hash, chunk_hash, type="contains")
-
-    # Add entity nodes
-    for entity_hash, entity in docstore.entity_index.items():
-        G.add_node(
-            entity_hash,
-            type="entity",
-            entity_type=entity.entity_type,
-            name=entity.name,
-            summary=entity.summary,
-        )
-
-        # Connect entities to their chunks if chunks are included
-        if include_chunks:
-            for chunk_hash, entity_hashes in docstore.chunk_entity_links.items():
-                if entity_hash in entity_hashes:
-                    G.add_edge(chunk_hash, entity_hash, type="mentions")
-
-    # Add relationship nodes and edges
-    for rel_hash, relation in docstore.relation_index.items():
-        # Get source and target entity hashes
-        source_hash = relation.source.hash()
-        target_hash = relation.target.hash()
-
-        # Add the relationship edge between entities
-        G.add_edge(
-            source_hash,
-            target_hash,
-            key=rel_hash,  # Use rel_hash as edge key for multigraph
-            type="relationship",
-            relation_type=relation.relation_type,
-            summary=relation.summary,
-        )
-
-        # Connect relationships to chunks if chunks are included
-        if include_chunks:
-            for chunk_hash, rel_hashes in docstore.chunk_relation_links.items():
-                if rel_hash in rel_hashes:
-                    # Add edge from chunk to both entities involved in relationship
-                    G.add_edge(chunk_hash, source_hash, type="mentions")
-                    G.add_edge(chunk_hash, target_hash, type="mentions")
-
-    return G
-
-
-# def get_entity_subgraph(
-#     G: nx.MultiDiGraph,
-#     entity_hash: str,
-#     n_hops: int = 2,
-#     edge_types: Optional[Set[str]] = None,
-# ) -> nx.MultiDiGraph:
-#     """Extract a subgraph centered on a specific entity.
-
-#     :param G: Full network graph
-#     :param entity_hash: Hash of the entity to center the subgraph on
-#     :param n_hops: Number of hops (edge traversals) to include in subgraph
-#     :param edge_types: Set of edge types to traverse. If None, traverse all edges.
-#     :return: Subgraph centered on the specified entity
-#     """
-#     if edge_types is None:
-#         edge_types = {"mentions", "relationship", "contains"}
-
-#     # Get nodes within n_hops of entity
-#     nodes = {entity_hash}
-#     current_nodes = {entity_hash}
-
-#     for _ in range(n_hops):
-#         next_nodes = set()
-#         for node in current_nodes:
-#             # Get neighbors through specified edge types
-#             for _, nbr, edge_data in G.edges(node, data=True):
-#                 if edge_data["type"] in edge_types:
-#                     next_nodes.add(nbr)
-#             for nbr, _, edge_data in G.in_edges(node, data=True):
-#                 if edge_data["type"] in edge_types:
-#                     next_nodes.add(nbr)
-#         current_nodes = next_nodes - nodes
-#         nodes.update(next_nodes)
-
-#     # Return induced subgraph on selected nodes
-#     return G.subgraph(nodes).copy()
-
-
-# def get_chunk_context(
-#     G: nx.MultiDiGraph, entity_hash: str, n_hops: int = 2
-# ) -> Dict[str, str]:
-#     """Get the text of chunks that provide context for an entity.
-
-#     :param G: Network graph
-#     :param entity_hash: Hash of entity to get context for
-#     :param n_hops: Number of hops to traverse when finding related chunks
-#     :return: Dictionary mapping chunk hashes to chunk text
-#     """
-#     # Get subgraph around entity
-#     subgraph = get_entity_subgraph(
-#         G, entity_hash, n_hops=n_hops, edge_types={"mentions", "contains"}
-#     )
-
-#     # Find chunks in subgraph
-#     chunks = {}
-#     for node in subgraph.nodes():
-#         node_data = subgraph.nodes[node]
-#         if node_data.get("type") == "chunk":
-#             chunks[node] = node_data["text"]
-
-#     return chunks
