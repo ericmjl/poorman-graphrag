@@ -153,3 +153,5 @@ data
 
 # SQLite database
 message_log.db
+notebooks/graph.html
+curve-sim.md
