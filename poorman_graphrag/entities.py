@@ -107,6 +107,22 @@ class Entity(BaseModel):
         """
         return self + other  # Reuse __add__ implementation
 
+    def __lt__(self, other: "Entity") -> bool:
+        """Compare entities based on their hash strings.
+
+        :param other: Another entity to compare with
+        :return: True if this entity's hash is less than other's hash
+        """
+        return self.hash() < other.hash()
+
+    def __gt__(self, other: "Entity") -> bool:
+        """Compare entities based on their hash strings.
+
+        :param other: Another entity to compare with
+        :return: True if this entity's hash is greater than other's hash
+        """
+        return self.hash() > other.hash()
+
 
 class Entities(BaseModel):
     """Collection of Entity objects for batch processing.

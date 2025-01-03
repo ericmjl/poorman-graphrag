@@ -118,7 +118,7 @@ class KnowledgeGraphDocStore(AbstractDocumentStore):
         """
         doc_hash = sha256(text.encode()).hexdigest()
         self._graph.add_node(doc_hash, partition="document", text=text)
-        # self._save()
+        self._save()
 
     def add_chunk(self, doc_hash: str, chunk_text: str) -> None:
         """Add chunk to docstore and link to document.
@@ -133,7 +133,7 @@ class KnowledgeGraphDocStore(AbstractDocumentStore):
         chunk_hash = sha256(chunk_text.encode()).hexdigest()
         self._graph.add_node(chunk_hash, partition="chunk", text=chunk_text)
         self._graph.add_edge(doc_hash, chunk_hash, partition="document_chunk")
-        # self._save()
+        self._save()
 
     def nodes(self, partition: Optional[str] = None, **attr) -> list:
         """Get nodes from the graph, optionally filtered by partition and attributes.
@@ -171,14 +171,13 @@ class KnowledgeGraphDocStore(AbstractDocumentStore):
             self._graph.add_node(entity_hash, partition="entity", pydantic_model=entity)
 
         self._graph.add_edge(chunk_hash, entity_hash, partition="chunk_entity")
-        # self._save()
+        self._save()
 
     def add_relation(self, chunk_hash: str, relation: Relationship) -> None:
         """Add relation to docstore.
 
         Because we are using MultiDiGraph objects,
         There is absolutely no need to check if edges already exist.
-        We can just add a new edge with a unique key.
 
         :param relation: Relation object
         :return: Relation hash
@@ -192,11 +191,10 @@ class KnowledgeGraphDocStore(AbstractDocumentStore):
         self._graph.add_edge(
             source_hash,
             target_hash,
-            key=relation.hash(),
             pydantic_model=relation,
             chunk_hashes=[chunk_hash],
         )
-        # self._save()
+        self._save()
 
     def add_community(self, community: Community) -> None:
         """Add community to docstore.
@@ -208,7 +206,7 @@ class KnowledgeGraphDocStore(AbstractDocumentStore):
         for entity in community.entities:
             self._graph.nodes[entity.hash()]["community"] = community.hash()
             self.communities[community.hash()] = community
-        # self._save()
+        self._save()
 
     def append(self, document: str):
         """Append a document to the docstore."""
@@ -281,7 +279,7 @@ class KnowledgeGraphDocStore(AbstractDocumentStore):
                     summary=community_summary_response.summary,
                 )
             )
-        # self._save()
+        self._save()
 
     @property
     def entities(self) -> Entities:
@@ -392,7 +390,7 @@ class KnowledgeGraphDocStore(AbstractDocumentStore):
     def reset(self) -> None:
         """Reset the document store."""
         self.__init__(storage_path=self.storage_path)
-        # self._save()
+        self._save()
 
     def _save(self) -> None:
         """Save the docstore to disk.
@@ -530,4 +528,4 @@ class KnowledgeGraphDocStore(AbstractDocumentStore):
             hash_mapping[canonical_hash] = canonical_hash
 
         # Save changes
-        # self._save()
+        self._save()
