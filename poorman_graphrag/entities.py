@@ -9,7 +9,7 @@ import json
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal
 
 from pydantic import BaseModel, Field, model_validator
 from thefuzz import fuzz
@@ -49,7 +49,7 @@ class Entity(BaseModel):
 
     entity_type: EntityType = Field(..., description="Type of entity")
     name: str = Field(..., description="Name or title of entity")
-    summary: Optional[str] = Field(..., description="Summary sentence about entity")
+    summary: List[str] = Field(..., description="Summary sentence(s) about entity")
 
     @model_validator(mode="after")
     def validate_summary(self) -> "Entity":
@@ -86,17 +86,16 @@ class Entity(BaseModel):
         :return: New Entity instance with merged data
         """
         # Combine summaries if they exist
-        summaries = []
+        summaries = set()
         if self.summary:
-            summaries.append(self.summary)
+            summaries.update(self.summary)
         if other.summary:
-            summaries.append(other.summary)
-        merged_summary = "\n\n".join(summaries) if summaries else None
+            summaries.update(other.summary)
 
         return Entity(
             entity_type=self.entity_type,
             name=self.name,  # Keep the name of the primary entity
-            summary=merged_summary,
+            summary=list(summaries),
         )
 
     def __radd__(self, other: "Entity") -> "Entity":
@@ -211,88 +210,6 @@ class Entities(BaseModel):
         return {"entities": [e.model_dump() for e in self.entities]}
 
 
-def identify_exact_duplicates(entities: "Entities") -> Dict[tuple, list]:
-    """Identify entities that have exactly the same name (ignoring case) and type.
-
-    :param entities: Entities instance to check for duplicates
-    :return: Dictionary mapping (type, name) tuples to lists of duplicate entities
-    """
-    groups: Dict[tuple, list] = defaultdict(list)
-    for entity in entities.entities:
-        key = (entity.entity_type.lower().strip(), entity.name.lower().strip())
-        groups[key].append(entity)
-
-    # Filter out groups with no duplicates
-    return {k: v for k, v in groups.items() if len(v) > 1}
-
-
-def merge_entity_group(group: List[Entity]) -> tuple[Entity, Dict[str, str]]:
-    """Merge a group of duplicate entities into a single entity.
-
-    :param group: List of entities to merge
-    :return: Tuple of (merged entity, mapping of old->new entity names)
-    """
-    merge_mapping: Dict[str, str] = {}
-    result = group[0]
-
-    for other in group[1:]:
-        merge_mapping[other.name] = result.name
-        result = other + result  # Uses __add__
-
-    return result, merge_mapping
-
-
-def merge_levenshtein_similar(
-    entities: "Entities", similarity_threshold: int = 95
-) -> tuple["Entities", Dict[str, str]]:
-    """Merge entities that have similar names according to fuzzy string matching.
-
-    :param entities: Entities instance to deduplicate
-    :param similarity_threshold: Minimum similarity ratio (0-100)
-    :return: Tuple of (new Entities instance, mapping of old->new entity names)
-    """
-    # Group entities by type first
-    type_groups: Dict[str, list] = defaultdict(list)
-    for entity in entities.entities:
-        type_groups[entity.entity_type.lower().strip()].append(entity)
-
-    merge_mapping: Dict[str, str] = {}
-    final_entities = []
-
-    for type_group in type_groups.values():
-        merged = set()
-
-        for i, entity1 in enumerate(type_group):
-            if i in merged:
-                continue
-
-            similar_group = [entity1]
-
-            for j, entity2 in enumerate(type_group[i + 1 :], start=i + 1):
-                if j in merged:
-                    continue
-
-                similarity = fuzz.token_sort_ratio(
-                    entity1.name.lower(), entity2.name.lower()
-                )
-                if similarity >= similarity_threshold:
-                    similar_group.append(entity2)
-                    merged.add(j)
-
-            if len(similar_group) == 1:
-                final_entities.append(entity1)
-            else:
-                # Merge all entities in the group
-                result = similar_group[0]
-                for other in similar_group[1:]:
-                    merge_mapping[other.name] = result.name
-                    result = result.merge_with(other)
-                final_entities.append(result)
-                merged.add(i)
-
-    return Entities(entities=final_entities), merge_mapping
-
-
 def identify_levenshtein_similar(
     entities: "Entities", similarity_threshold: int = 95
 ) -> Dict[tuple, List[Entity]]:
@@ -342,3 +259,87 @@ def identify_levenshtein_similar(
                 processed.add(i)
 
     return similar_groups
+
+
+###
+
+# def identify_exact_duplicates(entities: "Entities") -> Dict[tuple, list]:
+#     """Identify entities that have exactly the same name (ignoring case) and type.
+
+#     :param entities: Entities instance to check for duplicates
+#     :return: Dictionary mapping (type, name) tuples to lists of duplicate entities
+#     """
+#     groups: Dict[tuple, list] = defaultdict(list)
+#     for entity in entities.entities:
+#         key = (entity.entity_type.lower().strip(), entity.name.lower().strip())
+#         groups[key].append(entity)
+
+#     # Filter out groups with no duplicates
+#     return {k: v for k, v in groups.items() if len(v) > 1}
+
+
+# def merge_entity_group(group: List[Entity]) -> tuple[Entity, Dict[str, str]]:
+#     """Merge a group of duplicate entities into a single entity.
+
+#     :param group: List of entities to merge
+#     :return: Tuple of (merged entity, mapping of old->new entity names)
+#     """
+#     merge_mapping: Dict[str, str] = {}
+#     result = group[0]
+
+#     for other in group[1:]:
+#         merge_mapping[other.name] = result.name
+#         result = other + result  # Uses __add__
+
+#     return result, merge_mapping
+
+
+# def merge_levenshtein_similar(
+#     entities: "Entities", similarity_threshold: int = 95
+# ) -> tuple["Entities", Dict[str, str]]:
+#     """Merge entities that have similar names according to fuzzy string matching.
+
+#     :param entities: Entities instance to deduplicate
+#     :param similarity_threshold: Minimum similarity ratio (0-100)
+#     :return: Tuple of (new Entities instance, mapping of old->new entity names)
+#     """
+#     # Group entities by type first
+#     type_groups: Dict[str, list] = defaultdict(list)
+#     for entity in entities.entities:
+#         type_groups[entity.entity_type.lower().strip()].append(entity)
+
+#     merge_mapping: Dict[str, str] = {}
+#     final_entities = []
+
+#     for type_group in type_groups.values():
+#         merged = set()
+
+#         for i, entity1 in enumerate(type_group):
+#             if i in merged:
+#                 continue
+
+#             similar_group = [entity1]
+
+#             for j, entity2 in enumerate(type_group[i + 1 :], start=i + 1):
+#                 if j in merged:
+#                     continue
+
+#                 similarity = fuzz.token_sort_ratio(
+#                     entity1.name.lower(), entity2.name.lower()
+#                 )
+#                 if similarity >= similarity_threshold:
+#                     similar_group.append(entity2)
+#                     merged.add(j)
+
+#             if len(similar_group) == 1:
+#                 final_entities.append(entity1)
+#             else:
+#                 # Merge all entities in the group
+#                 result = similar_group[0]
+#                 for other in similar_group[1:]:
+#                     merge_mapping[other.name] = result.name
+#                     result = result.merge_with(other)
+#                 final_entities.append(result)
+#                 merged.add(i)
+
+#     return Entities(entities=final_entities), merge_mapping

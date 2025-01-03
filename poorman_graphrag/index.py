@@ -4,9 +4,11 @@ Index for tracking GraphRAG data.
 
 import json
 from dataclasses import dataclass
+from hashlib import sha256
 from pathlib import Path
 from typing import Dict, List, Set
 
+from poorman_graphrag.communities import Communities, Community
 from poorman_graphrag.entities import (
     Entities,
     Entity,
@@ -27,6 +29,7 @@ class GraphRAGIndex:
     :ivar chunk_relation_links: Dictionary mapping chunk hashes
         to sets of relation hashes
     :ivar entity_chunk_links: Dictionary mapping entity hashes to sets of chunk hashes
+    :ivar community_index: Dictionary mapping community hashes to Community objects
     """
 
     def __init__(self):
@@ -34,10 +37,14 @@ class GraphRAGIndex:
         self.chunk_index: Dict[str, str] = {}
         self.entity_index: Dict[str, Entity] = {}
         self.relation_index: Dict[str, Relationship] = {}
+        self.community_index: Dict[str, Community] = {}
         self.doc_chunk_links: Dict[str, Set[str]] = {}
         self.chunk_entity_links: Dict[str, Set[str]] = {}
         self.chunk_relation_links: Dict[str, Set[str]] = {}
         self.entity_chunk_links: Dict[str, Set[str]] = {}
+        self.entity_community_links: Dict[
+            str, Set[str]
+        ] = {}  # enables me to quickly grab out the community associated with an entity
 
     def add_document(self, text: str) -> str:
         """Add document to index.
@@ -45,7 +52,7 @@ class GraphRAGIndex:
         :param text: Document text
         :return: Document hash
         """
-        doc_hash = self._hash_text(text)
+        doc_hash = sha256(text.encode()).hexdigest()
         self.doc_index[doc_hash] = text
         self.doc_chunk_links[doc_hash] = set()
         return doc_hash
@@ -57,7 +64,7 @@ class GraphRAGIndex:
         :param chunk_text: Chunk text
         :return: Chunk hash
         """
-        chunk_hash = self._hash_text(chunk_text)
+        chunk_hash = sha256(chunk_text.encode()).hexdigest()
         self.chunk_index[chunk_hash] = chunk_text
         self.chunk_entity_links[chunk_hash] = set()
         self.chunk_relation_links[chunk_hash] = set()
@@ -113,6 +120,25 @@ class GraphRAGIndex:
             relation_hashes.append(relation_hash)
         return relation_hashes
 
+    def add_communities(self, communities: Communities) -> List[str]:
+        """Add communities to the index.
+
+        :param communities: Communities object containing communities to add
+        :return: List of community hashes
+        """
+        community_hashes = []
+        for community in communities.communities:
+            community_hash = community.hash()
+            self.community_index[community_hash] = community
+            community_hashes.append(community_hash)
+
+            # Update entity_community_links for each entity in the community
+            for node_hash in community.nodes:
+                if node_hash in self.entity_index:  # Only link if it's an entity
+                    if node_hash not in self.entity_community_links:
+                        self.entity_community_links[node_hash] = set()
+                    self.entity_community_links[node_hash].add(community_hash)
+
     def save(self, path: str | Path) -> None:
         """Save index to JSON file.
 
@@ -132,6 +158,12 @@ class GraphRAGIndex:
             },
             "chunk_relation_links": {
                 k: list(v) for k, v in self.chunk_relation_links.items()
+            },
+            "community_index": {
+                k: v.model_dump() for k, v in self.community_index.items()
+            },
+            "entity_community_links": {
+                k: list(v) for k, v in self.entity_community_links.items()
             },
         }
         with path.open("w") as f:
@@ -161,6 +193,12 @@ class GraphRAGIndex:
         }
         index.chunk_relation_links = {
             k: set(v) for k, v in data["chunk_relation_links"].items()
+        }
+        index.community_index = {
+            k: Community(**v) for k, v in data.get("community_index", {}).items()
+        }
+        index.entity_community_links = {
+            k: set(v) for k, v in data.get("entity_community_links", {}).items()
         }
         return index
 
