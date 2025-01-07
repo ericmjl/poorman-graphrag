@@ -123,17 +123,62 @@ Uses llamabot StructuredBot instances for:
 
 ### Retrieval Capabilities
 
-Supports multiple retrieval methods:
+The KnowledgeGraphDocstore supports specialized retrieval methods focused on graph-theoretic and entity-based queries:
 
-- Direct hash lookups for all node types
-- Keyword search using BM25 ranking
-- Filtering by:
-  - Chunks
-  - Documents
-  - Relations
-  - Entities
-  - Communities
-- Configurable number of results
+1. Entity-Centric Retrieval (Implemented)
+   - Uses BM25 ranking for multi-word entity name matching
+   - Entity results are formatted as "entity_name: summary"
+   - Entity summaries are pre-generated during entity extraction
+   - Summaries are stored as a list of strings and joined during retrieval
+
+2. Community-Based Retrieval (Implemented)
+   - Direct substring matching on community summaries
+   - Community summaries are pre-generated during community detection
+   - Returns full community summaries as-is
+
+3. Relationship-Based Retrieval (Tentative - Not Yet Implemented)
+   - Find all relationships between given entities
+   - Discover entities with specific relationship patterns
+   - Relationship path exploration with type constraints
+   - Subgraph extraction based on relationship types
+   - Relationship strength scoring based on frequency
+
+4. Graph Pattern Matching (Tentative - Not Yet Implemented)
+   - Exact subgraph pattern matching
+   - Approximate pattern matching with similarity thresholds
+   - Motif discovery and matching
+   - Template-based graph querying
+
+Key Design Decisions:
+1. Single Query Interface
+   - One query string searches both entities and communities
+   - Simplifies the API to match other docstore implementations
+   - No need for separate entity/community search parameters
+
+2. BM25 for Entity Search
+   - Chosen over Levenshtein distance for better multi-word matching
+   - Handles partial matches and word importance weighting
+   - No arbitrary similarity threshold needed
+   - Reuses existing dependency from LlamaBot
+
+3. Pre-generated Summaries
+   - Both entities and communities have pre-generated summaries
+   - No need for runtime summary generation during retrieval
+   - Consistent summary format across all retrievals
+   - Entity summaries are stored as lists for flexibility but joined for display
+
+4. Result Formatting
+   - Entity results prefixed with name for clear attribution
+   - Community summaries kept as-is since they're self-contained
+   - Consistent with other docstore implementations while preserving graph context
+
+Each retrieval method assumes specific keywords or identifiers are provided:
+- Entity retrieval requires exact entity names or types
+- Relationship queries need relationship types or entity endpoints
+- Community retrieval uses community IDs or member entity names
+- Pattern matching expects well-defined graph patterns
+
+The retrieval system focuses on graph structure and metadata rather than raw text content, enabling efficient navigation and discovery within the knowledge graph.
 
 ### Design Philosophy
 

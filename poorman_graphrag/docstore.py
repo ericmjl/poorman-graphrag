@@ -3,7 +3,7 @@
 import json
 from hashlib import sha256
 from pathlib import Path
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional
 
 import llamabot as lmb
 import networkx as nx
@@ -11,6 +11,7 @@ from chonkie import SDPMChunker
 from llamabot.components.docstore import AbstractDocumentStore
 from loguru import logger
 from networkx.algorithms.community import louvain_communities
+from rank_bm25 import BM25Okapi
 
 from poorman_graphrag.communities import (
     Community,
@@ -286,7 +287,7 @@ class KnowledgeGraphDocStore(AbstractDocumentStore):
         """Get all entities in the docstore."""
         entity_nodes = [
             data["pydantic_model"]
-            for _, data in self.nodes(data=True)
+            for _, data in self._graph.nodes(data=True)
             if data.get("partition") == "entity"
         ]
         return Entities(entities=entity_nodes)
@@ -311,81 +312,49 @@ class KnowledgeGraphDocStore(AbstractDocumentStore):
 
     def retrieve(
         self,
-        chunks: Optional[Set[str]] = None,
-        documents: Optional[Set[str]] = None,
-        relations: Optional[Set[str]] = None,
-        entities: Optional[Set[str]] = None,
-        communities: Optional[Set[str]] = None,
-        keywords: Optional[str] = None,
+        query: str,
         n_results: int = 10,
-    ) -> Dict[str, Set]:
-        """Retrieve items from the docstore.
+    ) -> List[str]:
+        """Retrieve entities and communities from the docstore.
 
-        :param chunks: Set of chunk hashes to retrieve
-        :param documents: Set of document hashes to retrieve
-        :param relations: Set of relation hashes to retrieve
-        :param entities: Set of entity hashes to retrieve
-        :param communities: Set of community hashes to retrieve
-        :param keywords: Keywords to search across all text
-        :param n_results: Number of results to return for keyword search
-        :return: Dictionary mapping item types to sets of retrieved items
+        The method searches for:
+
+        - Entities with names matching the query (using BM25 ranking)
+        - Communities whose summaries contain the query keywords
+
+        Returns formatted summaries of matched entities and communities.
+        Entity summaries are formatted as "entity_name: entity_summary"
+        Community summaries are returned as is.
+
+        :param query: Search query to match against entity names and community summaries
+        :param n_results: Maximum number of results to return
+        :return: List of formatted summaries from matching entities and communities
         """
-        results = {
-            "chunks": set(),
-            "documents": set(),
-            "relations": set(),
-            "entities": set(),
-            "communities": set(),
-        }
 
-        # Direct hash lookups
-        if chunks:
-            results["chunks"].update(
-                self.chunk_index[h] for h in chunks if h in self.chunk_index
-            )
-        if documents:
-            results["documents"].update(
-                self.doc_index[h] for h in documents if h in self.doc_index
-            )
-        if relations:
-            results["relations"].update(
-                self.relation_index[h] for h in relations if h in self.relation_index
-            )
-        if entities:
-            results["entities"].update(
-                self.entity_index[h] for h in entities if h in self.entity_index
-            )
-        if communities:
-            results["communities"].update(
-                self.community_index[h]
-                for h in communities
-                if h in self.community_index
-            )
+        summaries = []
 
-        # Keyword search using BM25
-        if keywords:
-            from rank_bm25 import BM25Okapi
+        # Entity name matching using BM25
+        entities = self.entities
+        entity_names = [entity.name for entity in entities]
+        tokenized_corpus = [name.lower().split() for name in entity_names]
+        tokenized_query = query.lower().split()
 
-            # Search across all text content
-            all_text = list(self.chunk_index.values()) + list(self.doc_index.values())
-            tokenized_corpus = [doc.split() for doc in all_text]
-            bm25 = BM25Okapi(tokenized_corpus)
+        # Initialize BM25 and get scores
+        bm25 = BM25Okapi(tokenized_corpus)
+        doc_scores = bm25.get_scores(tokenized_query)
 
-            tokenized_query = keywords.split()
-            doc_scores = bm25.get_scores(tokenized_query)
+        # Get entities with non-zero scores
+        for entity, score in zip(entities, doc_scores):
+            if score > 0:
+                summaries.append(f"{entity.name}: {' '.join(entity.summary)}")
 
-            # Get top n_results
-            top_indices = sorted(
-                range(len(doc_scores)), key=lambda i: doc_scores[i], reverse=True
-            )[:n_results]
+        # Community keyword matching
+        for community in self.communities.values():
+            if query.lower() in community.summary.lower():
+                summaries.append(community.summary)
 
-            for idx in top_indices:
-                if idx < len(self.chunk_index):
-                    results["chunks"].add(all_text[idx])
-                else:
-                    results["documents"].add(all_text[idx])
-
-        return results
+        # Limit and return results
+        return summaries[:n_results]
 
     def reset(self) -> None:
         """Reset the document store."""
