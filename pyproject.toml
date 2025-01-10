@@ -74,6 +74,7 @@ dependencies = [
     "hvplot",
     "llamabot>=0.10.6",
     "chonkie[semantic]>=0.2.2,<0.3",
+    "thefuzz",
 ]
 readme = "README.md"
 

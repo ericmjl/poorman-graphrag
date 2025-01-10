@@ -7627,12 +7627,13 @@ packages:
 - pypi: .
   name: poorman-graphrag
   version: 0.0.1
-  sha256: 85eee35b17338a9cc328f052ae5bd2eecb4663f2334f0e2fcd55789a5597d91e
+  sha256: a28ffcd82b9052acf42bd5902cc3e791867d0ec649dcb2e67da3c30678e63669
   requires_dist:
   - networkx
   - hvplot
   - llamabot>=0.10.6
   - chonkie[semantic]>=0.2.2,<0.3
+  - thefuzz
   requires_python: <=3.12
   editable: true
 - pypi: https://files.pythonhosted.org/packages/d3/f2/5ee24cd69e2120bf87356c02ace0438b4e4fb78229fddcbf6f1c6be377d5/posthog-3.7.4-py2.py3-none-any.whl

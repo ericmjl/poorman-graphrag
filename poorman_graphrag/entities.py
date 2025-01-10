@@ -299,15 +299,19 @@ def entity_extractor_user_prompt(text: str, existing_entities: str):
     """
 
 
-def get_entity_extractor() -> lmb.StructuredBot:
+def get_entity_extractor(**kwargs) -> lmb.StructuredBot:
     """Get an entity extractor.
 
     :return: Entity extractor
     """
+    system_prompt = kwargs.pop("system_prompt", entity_extractor_prompt())
+    pydantic_model = kwargs.pop("pydantic_model", Entities)
+    model_name = kwargs.pop("model_name", "gpt-4o")
     return lmb.StructuredBot(
-        system_prompt=entity_extractor_prompt(),
-        pydantic_model=Entities,
-        model_name="gpt-4o",
+        system_prompt=system_prompt,
+        pydantic_model=pydantic_model,
+        model_name=model_name,
+        **kwargs,
     )
 
 
