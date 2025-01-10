@@ -72,11 +72,6 @@ requires-python = "<=3.12"
 dependencies = [
     "networkx",
     "hvplot",
-    "pandas",
-    "matplotlib",
-    "jax",
-    "jaxlib",
-    "numpy",
     "llamabot>=0.10.6",
     "markitdown>=0.0.1a2,<0.0.1a3",
     "modal>=0.68.26,<0.69",
