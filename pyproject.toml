@@ -73,10 +73,7 @@ dependencies = [
     "networkx",
     "hvplot",
     "llamabot>=0.10.6",
-    "markitdown>=0.0.1a2,<0.0.1a3",
-    "modal>=0.68.26,<0.69",
-    "docling",
-    "chonkie[semantic]>=0.2.2,<0.3", "pyvis",
+    "chonkie[semantic]>=0.2.2,<0.3",
 ]
 readme = "README.md"
 
