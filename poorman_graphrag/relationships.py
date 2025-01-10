@@ -140,12 +140,16 @@ def relationship_extractor_prompt():
     identify relationships between entities mentioned in the text."""
 
 
-def get_relationship_extractor() -> lmb.StructuredBot:
+def get_relationship_extractor(**kwargs) -> lmb.StructuredBot:
     """Get a relationship extractor."""
+    system_prompt = kwargs.pop("system_prompt", relationship_extractor_prompt())
+    pydantic_model = kwargs.pop("pydantic_model", Relationships)
+    model_name = kwargs.pop("model_name", "gpt-4o")
     return lmb.StructuredBot(
-        pydantic_model=Relationships,
-        system_prompt=relationship_extractor_prompt(),
-        model_name="gpt-4o",
+        pydantic_model=pydantic_model,
+        system_prompt=system_prompt,
+        model_name=model_name,
+        **kwargs,
     )
 
 

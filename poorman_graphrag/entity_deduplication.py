@@ -47,19 +47,25 @@ def is_same_entity(entities) -> IsSameEntity:
     """
 
 
-def get_entity_judge(
-    system_prompt: str = "You are a judge of whether two entities in a knowledge graph "
-    "are similar enough to be considered the same entity. ",
-    model_name: str = "gpt-4o",
-) -> lmb.StructuredBot:
+@lmb.prompt("system")
+def is_same_entity_system_prompt():
+    """You are a judge of whether two entities in a knowledge graph
+    are similar enough to be considered the same entity."""
+
+
+def get_entity_judge(**kwargs) -> lmb.StructuredBot:
     """Get a StructuredBot that judges whether two entities are the same.
 
     :param system_prompt: The system prompt to use for the bot
     :param model_name: The model name to use for the bot
     :return: A StructuredBot configured to judge entity similarity
     """
+    system_prompt = kwargs.pop("system_prompt", is_same_entity_system_prompt())
+    pydantic_model = kwargs.pop("pydantic_model", IsSameEntity)
+    model_name = kwargs.pop("model_name", "gpt-4o")
     return lmb.StructuredBot(
-        system_prompt=lmb.system(system_prompt),
-        pydantic_model=IsSameEntity,
+        system_prompt=system_prompt,
+        pydantic_model=pydantic_model,
         model_name=model_name,
+        **kwargs,
     )

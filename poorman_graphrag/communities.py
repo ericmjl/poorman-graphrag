@@ -52,20 +52,26 @@ class CommunitySummary(BaseModel):
     summary: str = Field(description="A summary of the community of nodes.")
 
 
-def get_community_summarizer(
-    model_name: str = "gpt-4o",
-    system_prompt: str = "You are a helpful assistant that summarizes communities of nodes in a graph.",  # noqa: E501
-):
+@lmb.prompt("system")
+def community_summarizer_system_prompt():
+    """You are a helpful assistant that summarizes communities of nodes in a graph."""
+
+
+def get_community_summarizer(**kwargs) -> lmb.StructuredBot:
     """Get a community summarizer bot.
 
     :param model_name: Name of the model to use for summarization
     :param system_prompt: System prompt for the summarizer
     :return: A StructuredBot instance for summarizing communities
     """
+    model_name = kwargs.pop("model_name", "gpt-4o")
+    system_prompt = kwargs.pop("system_prompt", community_summarizer_system_prompt())
+    pydantic_model = kwargs.pop("pydantic_model", CommunitySummary)
     community_summarizer = lmb.StructuredBot(
         model_name=model_name,
-        pydantic_model=CommunitySummary,
+        pydantic_model=pydantic_model,
         system_prompt=system_prompt,
+        **kwargs,
     )
     return community_summarizer
 
